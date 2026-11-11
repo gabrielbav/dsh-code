@@ -1,0 +1,9 @@
+packages:
+  - packages/*
+
+onlyBuiltDependencies:
+  - node-pty
+  - esbuild
+
+patchedDependencies:
+  '@deepseek-ai/dsh-typert-generator@0.2.2-rc.1': patches/@deepseek-ai__dsh-typert-generator@0.2.2-rc.1.patch

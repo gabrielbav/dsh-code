@@ -1,0 +1,12 @@
+diff --git a/lib/index.js b/lib/index.js
+index 4f756e696acf1c4a80cd03a757592d626f059527..4ff5c02e44849544b33ab37e856e225cd61ff073 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1642,6 +1642,7 @@ var FaceAnalyzer = class {
+ 		const declaration = preferredDeclaration(resolved);
+ 		if (declaration === void 0) return false;
+ 		if (this.registrationForFile(declaration.getSourceFile().fileName)?.name === "@deepseek-ai/dsh-typert-protocol") return true;
++		if (/[\\/]@deepseek-ai[\\/]dsh-typert-protocol[\\/]lib[\\/]/.test(declaration.getSourceFile().fileName)) return true;
+ 		for (let current = declaration; current !== void 0; current = optionalParent(current)) if (ts.isModuleDeclaration(current) && ts.isStringLiteral(current.name) && current.name.text === "@deepseek-ai/dsh-typert-protocol") return true;
+ 		return false;
+ 	}

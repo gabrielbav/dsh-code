@@ -7,15 +7,15 @@
  */
 import { chown, constants, mkdir, open, readFile, rm, writeFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { DockerCli } from './docker.ts'
 import { createArgs, execArgs, OWNER_LABEL, REQUIRED_RUNTIME, SESSION_LABEL, type ResourceLimits } from './container-spec.ts'
-import { Git, workingBranchName, type RepositoryRef } from './git.ts'
-import type { EgressPolicy } from '../egress/policy.ts'
+import { Git, workingBranchName } from './git.ts'
+import type { RepositoryRef, SelfTestReport, WorkspaceStatus } from '../types.ts'
 
-/** Session states from the product spec. */
-export type WorkspaceStatus =
-  | 'created' | 'provisioning' | 'ready' | 'offline' | 'restarting' | 'failed' | 'deleting' | 'deleted'
+export type { SelfTestReport, WorkspaceStatus } from '../types.ts'
+import type { EgressPolicy } from '../egress/policy.ts'
 
 /** Durable workspace record, stored as JSON in the data directory. */
 export interface WorkspaceRecord {
@@ -53,12 +53,6 @@ export interface WorkspaceManagerConfig {
   readonly gid: number
   /** Maximum concurrent workspaces on this host. */
   readonly maxWorkspaces: number
-}
-
-/** Mandatory-check report from {@link WorkspaceManager.selfTest}. */
-export interface SelfTestReport {
-  readonly ok: boolean
-  readonly checks: ReadonlyArray<{ readonly id: string; readonly ok: boolean; readonly detail: string }>
 }
 
 /** Structured failure with a user-actionable code. */
@@ -110,6 +104,10 @@ export class WorkspaceManager {
       const probe = await this.docker.tryExec(['run', '--rm', '--runtime', REQUIRED_RUNTIME, '--network', 'none', this.config.image, 'sh', '-c', 'dmesg 2>/dev/null | head -n 3; id -u'])
       const isolated = probe.code === 0 && /gVisor/i.test(probe.stdout)
       checks.push({ id: 'isolation', ok: isolated, detail: isolated ? 'container kernel is gVisor' : `gVisor probe failed: ${probe.stderr.trim() || probe.stdout.trim()}` })
+      await mkdir(join(this.config.dataDir, 'workspaces'), { recursive: true })
+      const reach = await this.docker.tryExec(['run', '--rm', '--runtime', REQUIRED_RUNTIME, '--network', 'none', '--user', `${this.config.uid}:${this.config.gid}`,
+        '--mount', `type=bind,source=${join(this.config.dataDir, 'workspaces')},target=/probe,readonly`, this.config.image, 'ls', '/probe'])
+      checks.push({ id: 'data-dir', ok: reach.code === 0, detail: reach.code === 0 ? 'workspace folder is reachable by the container user' : `the container user ${this.config.uid} cannot reach ${this.config.dataDir}; choose a data folder outside a private home directory` })
       const tools = await this.docker.tryExec(['run', '--rm', '--runtime', REQUIRED_RUNTIME, '--network', 'none', '--user', `${this.config.uid}:${this.config.gid}`, this.config.image, 'sh', '-c', 'command -v git && command -v bash'])
       checks.push({ id: 'worker', ok: tools.code === 0, detail: tools.code === 0 ? 'worker image has git and bash' : 'worker image lacks git or bash' })
     }
@@ -169,7 +167,7 @@ export class WorkspaceManager {
       '--network', EGRESS_NETWORK,
       '--mount', `type=bind,source=${this.config.proxyDir},target=/opt/egress/src,readonly`,
       '--mount', `type=bind,source=${this.config.dataDir}/egress,target=/opt/egress/policy,readonly`,
-      this.config.proxyImage, 'node', '/opt/egress/src/entry.ts', '/opt/egress/policy/policy.json', String(PROXY_PORT),
+      this.config.proxyImage, 'node', `/opt/egress/src/${existsSync(join(this.config.proxyDir, 'entry.js')) ? 'entry.js' : 'entry.ts'}`, '/opt/egress/policy/policy.json', String(PROXY_PORT),
     ])
     await this.docker.exec(['network', 'connect', '--alias', PROXY_CONTAINER, INTERNAL_NETWORK, PROXY_CONTAINER])
     await this.docker.exec(['start', PROXY_CONTAINER])

@@ -10,6 +10,9 @@
  */
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import type { RepositoryRef } from '../types.ts'
+
+export type { RepositoryRef } from '../types.ts'
 
 /** Runs `git` with argv in a directory. */
 export type GitRunner = (args: readonly string[], cwd?: string) => Promise<string>
@@ -29,11 +32,12 @@ export class GitError extends Error {
 /**
  * Default runner. Prompts are disabled so a missing credential fails instead of hanging.
  * @param binary - git executable.
+ * @param prefix - arguments placed before every command, such as credential helper config.
  * @returns a runner.
  */
-export function gitRunner(binary = 'git'): GitRunner {
+export function gitRunner(binary = 'git', prefix: readonly string[] = []): GitRunner {
   return (args, cwd) => new Promise((resolve, reject) => {
-    execFile(binary, [...args], {
+    execFile(binary, [...prefix, ...args], {
       cwd, maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' },
     }, (error, stdout, stderr) => {
@@ -41,14 +45,6 @@ export function gitRunner(binary = 'git'): GitRunner {
       else resolve(stdout.trim())
     })
   })
-}
-
-/** Repository identity on a source control host. */
-export interface RepositoryRef {
-  /** `owner/name`. */
-  readonly fullName: string
-  /** HTTPS clone URL. */
-  readonly cloneUrl: string
 }
 
 /**

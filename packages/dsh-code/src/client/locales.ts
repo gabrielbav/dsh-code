@@ -1,0 +1,90 @@
+/** Code plugin UI copy. English and Chinese are complete; other locales fall back to English. */
+
+/** Locale namespace. */
+export const NS = 'dsh-code'
+
+export const en = {
+  'mode.label': 'Mode',
+  'mode.chat': 'Chat',
+  'mode.code': 'Code',
+  'picker.repository': 'Repository',
+  'picker.branch': 'Branch',
+  'picker.loading': 'Loading…',
+  'picker.chooseRepository': 'Choose a repository',
+  'picker.search': 'Filter repositories',
+  'picker.manual': 'owner/name',
+  'picker.default': '{branch} (default)',
+  'setup.title': 'Code needs Docker with gVisor',
+  'setup.retry': 'Check again',
+  'status.pending': 'The workspace starts when you send the first message.',
+  'status.provisioning': 'Preparing an isolated gVisor workspace…',
+  'status.restarting': 'Restarting the workspace…',
+  'status.ready': 'Workspace ready on {branch}',
+  'status.offline': 'The workspace is offline. It restarts with your next message.',
+  'status.failed': 'The workspace failed: {error}',
+  'action.diff': 'Diff',
+  'action.pr': 'Create PR',
+  'action.restart': 'Restart workspace',
+  'action.delete': 'Delete workspace',
+  'action.close': 'Close',
+  'diff.title': 'Changes against {commit}',
+  'diff.empty': 'No changes yet.',
+  'pr.title': 'Create pull request',
+  'pr.fieldTitle': 'Title',
+  'pr.fieldBody': 'Description',
+  'pr.submit': 'Commit, push and open PR',
+  'pr.done': 'Pull request opened: {url}',
+  'delete.title': 'Delete this workspace?',
+  'delete.warning': '{files} uncommitted files and {commits} unpushed commits will be lost. Remote branches and pull requests stay.',
+  'delete.clean': 'The container, checkout and local mirror are removed. Remote branches and pull requests stay.',
+  'delete.confirm': 'Delete workspace',
+  'error.generic': 'Something went wrong: {error}',
+} as const
+
+/** Message keys. */
+export type CodeKey = keyof typeof en
+
+export const zh: Record<CodeKey, string> = {
+  'mode.label': '模式',
+  'mode.chat': '聊天',
+  'mode.code': '代码',
+  'picker.repository': '仓库',
+  'picker.branch': '分支',
+  'picker.loading': '加载中…',
+  'picker.chooseRepository': '选择仓库',
+  'picker.search': '筛选仓库',
+  'picker.manual': '所有者/名称',
+  'picker.default': '{branch}（默认）',
+  'setup.title': '代码模式需要配置 gVisor 的 Docker',
+  'setup.retry': '重新检查',
+  'status.pending': '发送第一条消息后启动工作区。',
+  'status.provisioning': '正在准备隔离的 gVisor 工作区…',
+  'status.restarting': '正在重启工作区…',
+  'status.ready': '工作区已就绪：{branch}',
+  'status.offline': '工作区已离线，发送下一条消息时将重启。',
+  'status.failed': '工作区失败：{error}',
+  'action.diff': '差异',
+  'action.pr': '创建 PR',
+  'action.restart': '重启工作区',
+  'action.delete': '删除工作区',
+  'action.close': '关闭',
+  'diff.title': '相对 {commit} 的更改',
+  'diff.empty': '暂无更改。',
+  'pr.title': '创建拉取请求',
+  'pr.fieldTitle': '标题',
+  'pr.fieldBody': '描述',
+  'pr.submit': '提交、推送并创建 PR',
+  'pr.done': '已创建拉取请求：{url}',
+  'delete.title': '删除此工作区？',
+  'delete.warning': '{files} 个未提交文件和 {commits} 个未推送提交将丢失。远程分支和拉取请求会保留。',
+  'delete.clean': '将删除容器、检出和本地镜像。远程分支和拉取请求会保留。',
+  'delete.confirm': '删除工作区',
+  'error.generic': '出现错误：{error}',
+}
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface LocaleNamespaceMap {
+    /** Code plugin copy. */
+    'dsh-code': CodeKey
+  }
+}

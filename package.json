@@ -1,20 +1,20 @@
 {
-  "name": "@gabrielbav/dsh-code",
-  "version": "0.1.0",
-  "description": "Code mode for DeepSeek Harness: per-session Docker + gVisor workspaces with repository and branch selection",
-  "license": "MIT",
+  "name": "dsh-code-workspace",
+  "private": true,
   "type": "module",
-  "repository": { "type": "git", "url": "git+https://github.com/gabrielbav/dsh-code.git" },
-  "engines": { "node": ">=24.9.0" },
+  "engines": {
+    "node": ">=24.9.0"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc -b tsconfig.host.json tsconfig.client.json --noEmit",
     "test": "vitest run",
-    "test:docker": "DSH_CODE_DOCKER_TESTS=1 vitest run tests/integration"
+    "test:docker": "DSH_CODE_DOCKER_TESTS=1 vitest run packages/dsh-code/tests/integration"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "@deepseek-ai/dsh-typert-generator": "0.2.2-rc.1",
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   }
 }

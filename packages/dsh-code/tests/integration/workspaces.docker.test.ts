@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path'
 import { DockerCli } from '../../src/core/docker.ts'
 import { EGRESS_NETWORK, WorkspaceManager, type WorkspaceRecord } from '../../src/core/workspaces.ts'
 import { DEFAULT_ALLOW, type EgressPolicy } from '../../src/egress/policy.ts'
+import { supervisedArgv } from '../../src/host/subprocess-docker.ts'
 
 const enabled = process.env.DSH_CODE_DOCKER_TESTS === '1'
 const UPSTREAM = 'dsh-code-test-upstream'
@@ -104,6 +105,15 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     await manager.commitAndPush('session-a', 'second change')
     expect(existsSync(marker)).toBe(false)
   }, 90_000)
+
+  it('stops the whole in-container process group a supervised exec started', async () => {
+    await docker.exec(['exec', '-d', ...manager.execArgv(a, supervisedArgv('t1', ['sh', '-c', 'sleep 300 & sleep 301']), a.path, {}, false).slice(2)])
+    await new Promise(r => setTimeout(r, 1000))
+    expect(await manager.runInside(a, ['sh', '-c', 'pgrep -fc "sleep 30[01]" || true'])).toBe('3')
+    await manager.runInside(a, ['sh', '-c', 'p=$(cat /tmp/.dsh-exec/t1); kill -TERM -"$p"'])
+    await new Promise(r => setTimeout(r, 1000))
+    expect(await manager.runInside(a, ['sh', '-c', 'pgrep -fc "sleep 30[01]" || true'])).toBe('0')
+  }, 60_000)
 
   it('reconciles after a restart and cleans up everything it owns', async () => {
     const fresh = new WorkspaceManager(manager.config)

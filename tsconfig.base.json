@@ -6,11 +6,14 @@
     "strict": true,
     "noImplicitAny": true,
     "noUncheckedIndexedAccess": true,
-    "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
     "types": ["node"]
-  },
-  "include": ["src", "tests"]
+  }
 }
