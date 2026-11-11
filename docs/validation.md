@@ -26,6 +26,9 @@ Phase 0 assessment of [spec.md](spec.md) against gabrielbav/deepseek-harness at 
 ## Escapes found and closed
 
 - Host Git in a sandbox-writable checkout runs planted hooks, filters and fsmonitor commands. Fixed: after the container starts, Git runs inside it; pushes import a Git bundle into a host-owned mirror.
-- `fs-sandbox` fences writes only; host-side file tools could read any host file. Fixed: `ConfinedFileSystem` fences every operation to the session's workspace (remaining race: see [plan.md](plan.md)).
-- `subagent-dsh-sdk`, Claude Code/Codex subagents and stdio MCP clients spawn processes directly on the host. The `code` preset omits subagent and workflow tools.
+- `fs-sandbox` fences writes only; host-side file tools could read any host file. First fixed by fencing every host operation to the workspace, which still left a symlink-swap race between check and use. Closed in 0.2.0: file operations run inside the container through a bundled copy of the Harness local backend (`/opt/dsh-code/fs-helper.js`), so links resolve in the container's mount namespace; the host keeps its containment checks and treats the helper's answers as untrusted.
+- Harness search starts ripgrep by its host binary path, which is absent in the container; the Docker runtime maps it to the image's `rg`.
+- `skill-filesystem` watches skill roots with host-side watchers that would follow sandbox-controlled links; the `code` preset disables watching.
+- Application previews would serve sandbox-controlled HTML on the Harness origin. The preview route uses capability tokens, `Content-Security-Policy: sandbox` (opaque origin), and strips Cookie/Authorization upstream and Set-Cookie downstream.
+- `subagent-dsh-sdk` and stdio MCP clients spawn processes directly on the host; out-of-process subagent providers also check paths with host `fs`. The `code` preset keeps only in-process spawn and fork, whose children compose from the parent's preset generation (same isolate group, same container) and take the parent's working directory; model-selected presets are not enabled.
 - Docker embedded DNS is unreachable from gVisor's network stack, and any DNS in the worker allows tunnelling. The worker has no DNS; the proxy address is pinned with `--add-host`.

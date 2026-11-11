@@ -4,3 +4,4 @@ lib/
 **/worker/build-ca.crt
 coverage/
 *.tgz
+**/worker/fs-helper.js

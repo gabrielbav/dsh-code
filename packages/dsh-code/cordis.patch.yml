@@ -6,10 +6,12 @@
 #
 # Agent plane: the `code` preset keeps the chat experience of the standard
 # preset and swaps execution. `code-execution` isolates `subprocess`, `shell`
-# and `fs`, so bash and the file tools inside it see only the container-backed
-# process runtime and the workspace-confined filesystem. Tools that would act
-# from the host on the agent's behalf are left out: subagent and workflow
-# delegation (child agents do not inherit this preset), web fetch (host
+# and `fs`, so bash, search and the file tools inside it see only the
+# container-backed process runtime and the container-backed filesystem.
+# In-process subagents (spawn and fork) compose from the parent's preset
+# generation, so children run in the same container. Tools that would act
+# from the host on the agent's behalf are left out: out-of-process subagent
+# providers (SDK, Claude Code, Codex, ACP), workflows, web fetch (host
 # network), office documents, and plugin management.
 - insert:
     - id: code-workspaces
@@ -57,8 +59,12 @@
                 name: '@deepseek-ai/dsh-tool-fs-search'
                 config:
                   sampleOverCapGlobResults: false
+          # Skill folders inside the checkout are read through the container
+          # fs; host-side watchers would follow sandbox-controlled links.
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              watch: false
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
           - id: command-goal
@@ -82,6 +88,32 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
+          - id: subagent
+            name: '@deepseek-ai/dsh-subagent'
+          - id: subagent-spawn-in-process
+            name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+            config:
+              providerName: spawn
+          - id: subagent-fork-in-process
+            name: '@deepseek-ai/dsh-subagent-fork-in-process'
+            config:
+              providerName: fork
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'
+            config:
+              interrupt: false
+          # No agentPreset/allowedAgentPresets: the model cannot pick another
+          # preset, so every child inherits `code` and its container.
+          - id: tool-subagent
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent
+          - id: tool-subagent-fork
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: fork
+              toolName: subagent_fork
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: tool-todo

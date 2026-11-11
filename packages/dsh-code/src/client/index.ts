@@ -3,7 +3,8 @@
  * (`sidebar.mode`), filters the session list by mode through
  * `uiWorkspace.registerSessionFilter`, shows repository and branch pickers on
  * a blank session in Code mode, a workspace status line above the composer,
- * and Diff / Create PR / Restart / Delete actions in a Code session header.
+ * Diff / Create PR / Resources / Preview / Restart / Delete actions in a Code
+ * session header, and a Settings > Code page.
  *
  * `sidebar.mode` and `registerSessionFilter` come from the DeepSeek Harness
  * extension points added in gabrielbav/deepseek-harness. On a Harness
@@ -13,8 +14,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult } from '../types.ts'
-import { ModeSwitch, RepositoryPickers, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import type { CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, WorkspaceUsage } from '../types.ts'
+import { CodeSettingsSection, ModeSwitch, RepositoryPickers, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, readMode, sameIds, writeMode, type Cell, type CodeMode } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -38,6 +39,11 @@ interface CodeRemote {
   createPullRequest(sessionId: string, title: string, body: string): Promise<Result<string>>
   restart(sessionId: string): Promise<Result<CodeSessionView>>
   deleteWorkspace(sessionId: string): Promise<Result<void>>
+  buildWorker(): Promise<Result<SelfTestReport>>
+  usage(sessionId: string): Promise<Result<WorkspaceUsage | null>>
+  previewUrl(sessionId: string, port: number): Promise<Result<string>>
+  settings(): Promise<Result<CodeSettingsView>>
+  updateSettings(settings: CodeSettings): Promise<Result<CodeSettingsView>>
 }
 
 /** Sidebar filter registration offered by the fork's ui-workspace. */
@@ -57,9 +63,9 @@ interface UiWorkspaceFace {
 interface ClientFace {
   readonly slots: {
     inject(name: string, factory: () => () => void): void
-    register(options: { readonly name: string; readonly id: string; readonly order?: number; readonly locale?: string; readonly inject?: (sessionId: string) => object }, component: ComponentType<never>): () => void
+    register(options: { readonly name: string; readonly id: string; readonly order?: number; readonly label?: () => string; readonly locale?: string; readonly inject?: (sessionId: string) => object }, component: ComponentType<never>): () => void
   }
-  readonly locale: { register(ns: string, dicts: Record<string, Record<string, string>>): () => void }
+  readonly locale: { register(ns: string, dicts: Record<string, Record<string, string>>): () => void; bind(ns: string): (key: string) => string }
   readonly remote: {
     $mount(contribution: unknown): Promise<() => Promise<void> | void>
     readonly codeWorkspaces: CodeRemote
@@ -182,6 +188,7 @@ function register(ctx: Context): void {
       setup: async (again: boolean) => outcome(await api().setupStatus(again)),
       repositories: async () => outcome(await api().repositories(null)),
       branches: async (repository: string) => outcome(await api().branches(repository)),
+      buildWorker: async () => outcome(await api().buildWorker()),
       select: async (repository: string, branch: string | null) => {
         const presets = ctx.get('remote.agentPresets' as never) as { select(sessionId: string, presetId: string): Promise<Result<string>> } | undefined
         const preset = await presets?.select(sessionId, PRESET_ID)
@@ -218,6 +225,21 @@ function register(ctx: Context): void {
         if (result.ok) void refresh()
         return result
       },
+      usage: async () => outcome(await api().usage(sessionId)),
+      previewPorts: async () => {
+        const result = outcome(await api().settings())
+        return result.ok ? { ok: true, value: result.value.settings.previewPorts } as const : result
+      },
+      preview: async (port: number) => outcome(await api().previewUrl(sessionId, port)),
     }),
   }, SessionActions as ComponentType<never>))
+
+  face.slots.inject('settings.section', () => face.slots.register({
+    name: 'settings.section', id: 'dsh-code', order: 25, locale: NS,
+    label: () => face.locale.bind(NS)('settings.nav'),
+    inject: () => ({
+      load: async () => outcome(await api().settings()),
+      save: async (settings: CodeSettings) => outcome(await api().updateSettings(settings)),
+    }),
+  }, CodeSettingsSection as ComponentType<never>))
 }

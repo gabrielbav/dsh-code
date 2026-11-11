@@ -47,6 +47,22 @@ export function supervisedArgv(execId: string, argv: readonly string[]): string[
   return ['setsid', 'sh', '-c', `mkdir -p /tmp/.dsh-exec && echo $$ > /tmp/.dsh-exec/${execId} && exec "$@"`, 'dsh-exec', ...argv]
 }
 
+/**
+ * Map host-only executables to their in-container equivalents. Harness search
+ * starts ripgrep by the absolute path of its host binary (a sidecar next to
+ * Node or `@vscode/ripgrep`), which does not exist in the container; the
+ * worker image ships `rg` on PATH.
+ * @param argv - requested argv.
+ * @returns argv to run inside the container.
+ */
+export function containerArgv(argv: readonly string[]): readonly string[] {
+  const [command, ...rest] = argv
+  if (command === undefined || !command.startsWith('/')) return argv
+  const name = command.slice(command.lastIndexOf('/') + 1)
+  if (name === 'rg' || name.endsWith('-rg') || /[\\/]@vscode[\\/]ripgrep[\\/]/.test(command)) return ['rg', ...rest]
+  return argv
+}
+
 /** Docker-backed subprocess runtime. */
 export class DockerSubprocessRuntime extends LocalSubprocessRuntime {
   static inject = ['codeWorkspaces']
@@ -89,7 +105,7 @@ export class DockerSubprocessRuntime extends LocalSubprocessRuntime {
   override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
     const record = this.recordFor(spec.cwd)
     const execId = randomUUID()
-    const argv = ['docker', ...this.workspaces.execArgv(record, supervisedArgv(execId, spec.argv), spec.cwd, containerEnv(spec.env), false)]
+    const argv = ['docker', ...this.workspaces.execArgv(record, supervisedArgv(execId, containerArgv(spec.argv)), spec.cwd, containerEnv(spec.env), false)]
     const handle = super.spawn({ ...spec, argv, cwd: this.workspaces.config.dataDir, env: undefined, signal: undefined })
     const stop = (): void => {
       void this.killGroup(record, execId)
@@ -115,7 +131,7 @@ export class DockerSubprocessRuntime extends LocalSubprocessRuntime {
     const record = this.recordFor(spec.cwd)
     const execId = randomUUID()
     const env = { ...containerEnv(spec.env), TERM: spec.terminalType }
-    const argv = ['docker', ...this.workspaces.execArgv(record, supervisedArgv(execId, spec.argv), spec.cwd, env, true)]
+    const argv = ['docker', ...this.workspaces.execArgv(record, supervisedArgv(execId, containerArgv(spec.argv)), spec.cwd, env, true)]
     const handle = await super.spawnTerminal({ ...spec, argv, cwd: this.workspaces.config.dataDir, env: undefined })
     const terminate = async (): Promise<void> => {
       await this.killGroup(record, execId)

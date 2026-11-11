@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run typecheck
+      - run: pnpm test
+
+  docker-gvisor:
+    runs-on: ubuntu-24.04
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install gVisor and register runsc with Docker
+        run: |
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
+          sudo apt-get update && sudo apt-get install -y runsc
+          sudo runsc install
+          sudo systemctl reload docker || sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: docker build -t dsh-code-worker:0.2.0 packages/dsh-code/worker
+      - run: docker pull node:24-alpine
+      # As root, like a host install: checkouts are chowned to the container user
+      # and live outside any private home directory.
+      - run: sudo mkdir -p /var/lib/dsh-code-ci
+      - run: sudo env "PATH=$PATH" TMPDIR=/var/lib/dsh-code-ci pnpm run test:docker

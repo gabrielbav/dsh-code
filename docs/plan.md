@@ -16,54 +16,50 @@ Status of [spec.md](spec.md) as implemented in this repository, and the open wor
 | One container, checkout and branch per session; parallel isolation | `WorkspaceManager.provision` | live tests |
 | Lifecycle: records, reconcile, restart, delete, archive cleanup | `WorkspaceManager`, `workspaces-service.ts` | live tests |
 | Egress: allowlist, no direct IP/IPv6/private/metadata, DNS rebinding, policy reload closes tunnels, no worker DNS | `src/egress/*` | unit + live tests |
-| Container-backed `ctx.subprocess`, workspace-confined `ctx.fs`, `code` preset | `src/host/*`, `cordis.patch.yml` | real Web app run |
+| Container-backed `ctx.subprocess`, container-backed `ctx.fs`, `code` preset | `src/host/*`, `src/worker/*`, `cordis.patch.yml` | unit tests; race check (below) |
 | Source control: repos, branches, pinned base, unique branch, diff, commit, push, PR, via host `gh` | `src/core/github.ts`, `src/core/git.ts` | live tests (push), real app (clone) |
-| UI: Chat/Code switch, sidebar filter, repo/branch pickers, status line, Diff / Create PR / Restart / Delete | `src/client/*` | real Web app run, screenshots |
+| UI: Chat/Code switch, sidebar filter, repo/branch pickers, status line, Diff / Create PR / Resources / Preview / Restart / Delete | `src/client/*` | real Web app run (0.1.0 actions), typecheck + build (new actions) |
 | First message held until provisioned; working directory moved into the checkout | `CodeWorkspacesService.hold` | real Web app run |
+| File operations run inside the container (closes the symlink race) | `src/host/fs-container.ts`, `src/host/fs-helper-client.ts`, `src/worker/*`, `tsdown.worker.ts` | unit tests; manual race run below; live race test written, not yet run |
+| Settings > Code page, saved through `ctx.configEditor`, applied in place via `internal/update` | `src/core/settings.ts`, `CodeWorkspacesService.updateSettings`, `CodeSettingsSection` | unit tests (validation, live-vs-restart) |
+| Guided setup: per-check remediation, image check, Build worker image | `WorkspaceManager.selfTest`, `buildWorker` | unit tests (fake Docker) |
+| Search, skills and subagents in Code sessions | `containerArgv` (ripgrep), preset rows | unit tests; preset rows unverified in a running Harness |
+| Resource usage (`docker stats` + checkout size) | `WorkspaceManager.usage`, Resources dialog | unit tests (parsing); live test written, not yet run |
+| Application previews through an authenticated, sandboxed route | `src/host/preview.ts`, `previewAddress`, Preview dialog | unit tests (headers, tokens, redirects); live test (address) written, not yet run |
+| CI and publish prep | `.github/workflows/ci.yml`, `prepack`, `publishConfig` | not yet run on GitHub |
 
-The real-app run: fork built from source, this bundle packed and added with `dsh plugin --profile web add <tgz>`, mock model from `packages/test-support/llm-mock-server` scripting one `bash` call. The tool result showed `Starting gVisor`, `uid=1000`, the checkout path, the `dsh-code/...` branch, no Docker socket, and `example.org` blocked.
+The real-app run (0.1.0): fork built from source, this bundle packed and added with `dsh plugin --profile web add <tgz>`, mock model from `packages/test-support/llm-mock-server` scripting one `bash` call. The tool result showed `Starting gVisor`, `uid=1000`, the checkout path, the `dsh-code/...` branch, no Docker socket, and `example.org` blocked.
+
+Race check (0.2.0): a container (default runtime, otherwise the workspace flags) looped `ln -sfn` between a workspace file and a host-only file while the host read the link 1,000 times through the in-container helper: 585 workspace reads, 413 not found, 2 I/O errors, never the host file. The same run caught a bundling bug (a dependency read its own `package.json` at load), now fixed and covered by a unit test that runs the bundle without `node_modules`.
+
+## Not verified in this round
+
+The 0.2.0 session had Docker but no gVisor (`runsc` could not be installed there), so `pnpm run test:docker` was not run, and Harness itself was not started. Before relying on 0.2.0:
+
+1. Run `pnpm run test:docker` on a host with `runsc` (or let the CI `docker-gvisor` job run). New live cases: the file-helper race, resource usage and preview address, and a policy update refusing a destination.
+2. Start the Web app with the bundle and check: the Settings > Code page loads and saves (and the `code-workspaces` row changes in `cordis.patch.yml` without a plugin restart); the `subagent` tool appears in a Code session and its child runs `id -u` inside the same container; `grep`/search tools work; Resources and Preview open.
 
 ## Open work
 
 Ordered by priority. Each item lists the goal, the approach, and how to verify it.
 
-### 1. Close the confined-filesystem race (security)
-- **Goal:** no host file outside the workspace can be read or written through the file tools, even when a container process swaps symlinks concurrently.
-- **Approach:** run file operations inside the container. Either implement `ctx.fs` over `docker exec` with a small helper script per operation, or reuse `@deepseek-ai/dsh-ssh-helper-runtime`'s protocol over `docker exec -i`. Keep `ConfinedFileSystem` as the fallback check.
-- **Verify:** a live test where a background container loop flips `link -> /etc/hostname` while the host reads `link` 1,000 times; the host must never return host content.
-
-### 2. Settings > Code page
-- **Goal:** edit network mode, allowlist, private destinations, resource limits and worker image from the UI (spec §4.1, §9).
-- **Approach:** register into `settings.section`; persist through the `code-workspaces` row config via the existing settings/config-editor APIs; call `WorkspaceManager.updatePolicy` on change. Policy changes must never be callable from the agent's tools.
-- **Verify:** change the allowlist in the UI and observe an open tunnel close and a new request refused.
-
-### 3. Guided setup (spec §4.1)
-- **Goal:** detect Docker and gVisor, offer install steps with consent, and build or pull the worker image.
-- **Approach:** extend `setupStatus` with per-check remediation text; add `buildWorker()` that runs `docker build` from `worker/`; publish a pinned worker image by digest and verify it.
-- **Verify:** on a host without `runsc`, the Code hero shows the failing checks and Code cannot start.
-
-### 4. Publish
+### 1. Publish
 - **Goal:** install with `dsh plugin --profile web add @gabrielbav/dsh-code`.
-- **Approach:** publish to npm (built `lib/` in `files`); set peer ranges to the Harness release that contains PR #2; add a CI workflow running `pnpm test`, `pnpm run typecheck`, and `pnpm run test:docker` on a runner with gVisor.
+- **Approach:** set peer ranges to the first Harness release that contains PR #2; publish the package to npm (`prepack` refuses an unbuilt tree); publish the worker image to a registry and pin `workerImage` by digest; add the npm and image publish steps to CI on tags.
 
-### 5. Process routing hardening
+### 2. Preview upgrades
+- **Goal:** dev servers with hot reload.
+- **Approach:** `ctx.webServer.registerUpgrade` matches exact paths only; either register one upgrade path per minted token or propose a generic prefix-upgrade option upstream. Serving previews from a separate origin (a second listener or subdomain) would also lift the relative-path limitation.
+
+### 3. Process routing hardening
 - **Goal:** cover every process a Code session can start.
-- **Approach:** audit preset rows for direct `child_process` use (LSP if added, `tool-jobs` background jobs, persistent bash); verify background jobs run in the container; decide whether to start repository-defined MCP servers inside the container.
-- **Verify:** a test per tool asserting its process runs under gVisor.
+- **Approach:** if `tool-jobs`/`jobs-local` are added to the preset, background jobs already run through `ctx.shell` → `ctx.subprocess`; add them and a live test. Decide whether to start repository-defined MCP servers inside the container (`ctx.subprocess` stdio). LSP (`lsp-stdio`) also spawns through `ctx.subprocess`; adding it needs the language servers in the worker image.
 
-### 6. Subagents in Code sessions
-- **Goal:** allow delegation without host execution.
-- **Approach:** check whether `tool-subagent` spawn/fork children inherit the parent's preset and working directory; if so, re-enable `delegation` in the `code` preset; otherwise add an upstream generic option for child preset inheritance.
-
-### 7. Resource usage view and previews
-- **Goal:** spec CODE-14 and §9 application previews.
-- **Approach:** `docker stats --no-stream` behind a Remote method and a right-sidebar tab; previews through an authenticated Harness route proxying a declared container port on the internal network, never a published host port.
-
-### 8. macOS and Windows
+### 4. macOS and Windows
 - **Goal:** spec §8.2.
-- **Approach:** Colima (macOS) and WSL2 (Windows) with `runsc` inside the VM; check the bind-mount path mapping and the container user's access to `dataDir`.
+- **Approach:** Colima (macOS) and WSL2 (Windows) with `runsc` inside the VM; check the bind-mount path mapping (the checkout must have the same absolute path in the VM and in the container) and the container user's access to `dataDir`.
 
-### 9. Remote Control (spec §11, Phase 4)
+### 5. Remote Control (spec §11, Phase 4)
 - **Goal:** open and control a locally running Code session from an online Harness, without moving execution.
 - **Approach:** build on experimental Liveshare (outbound tunnel, retry, per-principal RBAC). Missing: an owner-equivalent remote principal that may answer approvals, device pairing, replay across tunnel restarts, and the relay server. Most of this is generic and belongs upstream, as separate PRs.
 
@@ -76,7 +72,7 @@ Team deployment (spec §12): Harness has no user/org model or managed worker hos
 pnpm install
 pnpm run build
 pnpm test
-pnpm run test:docker   # needs Docker with runsc and: docker build -t dsh-code-worker:0.1.0 packages/dsh-code/worker
+pnpm run test:docker   # needs Docker with runsc and, after the build: docker build -t dsh-code-worker:0.2.0 packages/dsh-code/worker
 ```
 
 To test inside Harness: build the fork from source (`pnpm run build:artifacts`), then `pnpm pack` this package and `dsh plugin --profile web add <tgz>` with a scratch `DSH_HOME`. Without a model key, run `pnpm run mock:llm` in the fork and start Harness with `DEEPSEEK_API_KEY=mock-key DEEPSEEK_BASE_URL=http://127.0.0.1:8000/v1`.

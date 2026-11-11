@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { DockerCli } from './docker.ts'
 import { createArgs, execArgs, OWNER_LABEL, REQUIRED_RUNTIME, SESSION_LABEL, type ResourceLimits } from './container-spec.ts'
 import { Git, workingBranchName } from './git.ts'
-import type { RepositoryRef, SelfTestReport, WorkspaceStatus } from '../types.ts'
+import type { RepositoryRef, SelfTestCheck, SelfTestReport, WorkspaceStatus, WorkspaceUsage } from '../types.ts'
 
 export type { SelfTestReport, WorkspaceStatus } from '../types.ts'
 import type { EgressPolicy } from '../egress/policy.ts'
@@ -41,18 +41,22 @@ export interface WorkspaceManagerConfig {
   /** Root for workspaces, mirrors and records; must be outside any home dotfolder. */
   readonly dataDir: string
   /** Worker image reference, pinned by digest in production. */
-  readonly image: string
+  image: string
+  /** Directory holding the worker Dockerfile and file helper, for guided builds. */
+  readonly workerDir?: string
   /** Egress proxy image (runs the bundled proxy script). */
   readonly proxyImage: string
   /** Absolute host directory holding the egress proxy sources (`entry.ts`, `proxy.ts`, `policy.ts`). */
   readonly proxyDir: string
-  readonly limits: ResourceLimits
-  readonly policy: EgressPolicy
+  limits: ResourceLimits
+  policy: EgressPolicy
   /** Container uid/gid; must not be 0. */
   readonly uid: number
   readonly gid: number
   /** Maximum concurrent workspaces on this host. */
-  readonly maxWorkspaces: number
+  maxWorkspaces: number
+  /** Container ports the user may preview through the authenticated Harness route. */
+  previewPorts: readonly number[]
 }
 
 /** Structured failure with a user-actionable code. */
@@ -95,28 +99,62 @@ export class WorkspaceManager {
    * @returns the report.
    */
   async selfTest(): Promise<SelfTestReport> {
-    const checks: Array<{ id: string; ok: boolean; detail: string }> = []
+    const checks: SelfTestCheck[] = []
     const runtimes = await this.docker.runtimes()
-    checks.push({ id: 'docker', ok: runtimes.length > 0, detail: runtimes.length > 0 ? 'Docker daemon reachable' : 'Docker daemon not reachable' })
+    checks.push(runtimes.length > 0
+      ? { id: 'docker', ok: true, detail: 'Docker daemon reachable' }
+      : { id: 'docker', ok: false, detail: 'Docker daemon not reachable', remedy: SETUP_REMEDIES.docker })
+    if (runtimes.length === 0) return { ok: false, checks }
     const hasRunsc = runtimes.includes(REQUIRED_RUNTIME)
-    checks.push({ id: 'runtime', ok: hasRunsc, detail: hasRunsc ? 'runsc runtime registered' : 'runsc runtime is not registered with Docker' })
-    if (hasRunsc) {
+    checks.push(hasRunsc
+      ? { id: 'runtime', ok: true, detail: 'runsc runtime registered' }
+      : { id: 'runtime', ok: false, detail: 'runsc runtime is not registered with Docker', remedy: SETUP_REMEDIES.runtime })
+    const image = await this.docker.tryExec(['image', 'inspect', '--format', '{{.Id}}', this.config.image])
+    checks.push(image.code === 0
+      ? { id: 'image', ok: true, detail: `worker image ${this.config.image} present (${image.stdout.trim().slice(0, 19)})` }
+      : { id: 'image', ok: false, detail: `worker image ${this.config.image} is missing`, remedy: SETUP_REMEDIES.image(this.config.image), ...(this.config.workerDir === undefined ? {} : { action: 'build-worker' as const }) })
+    if (hasRunsc && image.code === 0) {
       const probe = await this.docker.tryExec(['run', '--rm', '--runtime', REQUIRED_RUNTIME, '--network', 'none', this.config.image, 'sh', '-c', 'dmesg 2>/dev/null | head -n 3; id -u'])
       const isolated = probe.code === 0 && /gVisor/i.test(probe.stdout)
-      checks.push({ id: 'isolation', ok: isolated, detail: isolated ? 'container kernel is gVisor' : `gVisor probe failed: ${probe.stderr.trim() || probe.stdout.trim()}` })
+      checks.push({ id: 'isolation', ok: isolated, detail: isolated ? 'container kernel is gVisor' : `gVisor probe failed: ${probe.stderr.trim() || probe.stdout.trim()}`, ...(isolated ? {} : { remedy: SETUP_REMEDIES.runtime }) })
       await mkdir(join(this.config.dataDir, 'workspaces'), { recursive: true })
       const reach = await this.docker.tryExec(['run', '--rm', '--runtime', REQUIRED_RUNTIME, '--network', 'none', '--user', `${this.config.uid}:${this.config.gid}`,
         '--mount', `type=bind,source=${join(this.config.dataDir, 'workspaces')},target=/probe,readonly`, this.config.image, 'ls', '/probe'])
-      checks.push({ id: 'data-dir', ok: reach.code === 0, detail: reach.code === 0 ? 'workspace folder is reachable by the container user' : `the container user ${this.config.uid} cannot reach ${this.config.dataDir}; choose a data folder outside a private home directory` })
-      const tools = await this.docker.tryExec(['run', '--rm', '--runtime', REQUIRED_RUNTIME, '--network', 'none', '--user', `${this.config.uid}:${this.config.gid}`, this.config.image, 'sh', '-c', 'command -v git && command -v bash'])
-      checks.push({ id: 'worker', ok: tools.code === 0, detail: tools.code === 0 ? 'worker image has git and bash' : 'worker image lacks git or bash' })
+      checks.push(reach.code === 0
+        ? { id: 'data-dir', ok: true, detail: 'workspace folder is reachable by the container user' }
+        : { id: 'data-dir', ok: false, detail: `the container user ${this.config.uid} cannot reach ${this.config.dataDir}`, remedy: SETUP_REMEDIES.dataDir })
+      const tools = await this.docker.tryExec(['run', '--rm', '--runtime', REQUIRED_RUNTIME, '--network', 'none', '--user', `${this.config.uid}:${this.config.gid}`, this.config.image,
+        'sh', '-c', `command -v git && command -v bash && command -v rg && node --version && test -r ${FS_HELPER}`])
+      checks.push(tools.code === 0
+        ? { id: 'worker', ok: true, detail: 'worker image has git, bash, ripgrep, Node and the file helper' }
+        : { id: 'worker', ok: false, detail: 'worker image lacks git, bash, ripgrep, Node or the file helper', remedy: SETUP_REMEDIES.image(this.config.image), ...(this.config.workerDir === undefined ? {} : { action: 'build-worker' as const }) })
     }
     return { ok: checks.every(c => c.ok), checks }
+  }
+
+  /**
+   * Build the worker image from the bundled Dockerfile. Runs only on an
+   * explicit user action from the setup panel.
+   * @param signal - cancels the build.
+   * @returns the build log tail.
+   */
+  async buildWorker(signal?: AbortSignal): Promise<string> {
+    const dir = this.config.workerDir
+    if (dir === undefined || !existsSync(join(dir, 'Dockerfile'))) throw new WorkspaceError('not-found', 'the worker Dockerfile is not bundled with this installation')
+    if (!existsSync(join(dir, 'fs-helper.js'))) throw new WorkspaceError('not-found', 'the worker file helper is missing; rebuild the dsh-code package')
+    const args = ['build', '-t', this.config.image, dir]
+    const result = await this.docker.tryExec(args, signal)
+    // BuildKit reports progress on stderr.
+    const log = `${result.stdout}\n${result.stderr}`.trim().split('\n').slice(-20).join('\n')
+    if (result.code !== 0) throw new WorkspaceError('provision-failed', `worker image build failed:\n${log}`)
+    return log
   }
 
   /** Load records from disk and reconcile them against Docker state. */
   async reconcile(): Promise<{ orphansRemoved: string[]; offline: string[] }> {
     await mkdir(this.recordsDir, { recursive: true })
+    // A running proxy reloads this file, so a policy saved while Harness was down applies now.
+    await this.updatePolicy(this.config.policy)
     for (const file of await readdir(this.recordsDir)) {
       if (!file.endsWith('.json')) continue
       const record = JSON.parse(await readFile(join(this.recordsDir, file), 'utf8')) as WorkspaceRecord
@@ -184,8 +222,59 @@ export class WorkspaceManager {
    * @param policy - the new policy.
    */
   async updatePolicy(policy: EgressPolicy): Promise<void> {
+    this.config.policy = policy
+    await mkdir(join(this.config.dataDir, 'egress'), { recursive: true })
     await writeFile(this.policyPath, JSON.stringify(policy), { mode: 0o644 })
   }
+
+  /**
+   * Replace resource limits. Running containers get the new CPU, memory and
+   * process limits in place when the runtime supports it; the `/tmp` size and
+   * anything the runtime refuses take effect on the next restart.
+   * @param limits - the new limits.
+   * @returns session ids whose container kept its old limits until restart.
+   */
+  async updateLimits(limits: ResourceLimits): Promise<string[]> {
+    this.config.limits = limits
+    const deferred: string[] = []
+    for (const record of this.records.values()) {
+      if (record.status !== 'ready') continue
+      const result = await this.docker.tryExec(['update', '--cpus', String(limits.cpus), '--memory', `${limits.memoryMb}m`, '--memory-swap', `${limits.memoryMb}m`, '--pids-limit', String(limits.pids), record.containerName])
+      if (result.code !== 0) deferred.push(record.sessionId)
+    }
+    return deferred
+  }
+
+  /**
+   * Resource usage of one workspace container.
+   * @param sessionId - logical session id.
+   * @returns usage, or undefined when the container is not running.
+   */
+  async usage(sessionId: string): Promise<WorkspaceUsage | undefined> {
+    const record = this.records.get(sessionId)
+    if (record === undefined || record.status !== 'ready') return undefined
+    const stats = await this.docker.tryExec(['stats', '--no-stream', '--format', '{{json .}}', record.containerName])
+    if (stats.code !== 0) return undefined
+    const disk = await this.runInside(record, ['du', '-s', '-B1', record.path]).catch(() => '0')
+    return parseStats(stats.stdout, this.config.limits, Number(disk.split(/\s+/)[0]) || 0)
+  }
+
+  /**
+   * Internal address of a declared preview port, for the authenticated proxy.
+   * @param sessionId - logical session id.
+   * @param port - container port.
+   * @returns host and port on the internal network.
+   */
+  async previewAddress(sessionId: string, port: number): Promise<{ host: string; port: number }> {
+    if (!this.config.previewPorts.includes(port)) throw new WorkspaceError('unsafe-state', `port ${port} is not a declared preview port`)
+    const record = this.require(sessionId)
+    if (record.status !== 'ready') throw new WorkspaceError('unsafe-state', `workspace is ${record.status}`)
+    const host = await this.docker.exec(['inspect', '--format', `{{(index .NetworkSettings.Networks "${INTERNAL_NETWORK}").IPAddress}}`, record.containerName])
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) throw new WorkspaceError('unsafe-state', 'workspace has no internal address')
+    return { host, port }
+  }
+
+  /** Load records from disk and reconcile them against Docker state. */
 
   /**
    * The record for a session, if any.
@@ -408,6 +497,50 @@ export class WorkspaceManager {
     this.records.set(record.sessionId, record)
     await mkdir(this.recordsDir, { recursive: true })
     await writeFile(join(this.recordsDir, `${record.workspaceId}.json`), JSON.stringify(record, null, 2))
+  }
+}
+
+/** Path of the file helper in the worker image. */
+const FS_HELPER = '/opt/dsh-code/fs-helper.js'
+
+/** User-facing fixes for failing setup checks. */
+export const SETUP_REMEDIES = {
+  docker: 'Install Docker Engine (https://docs.docker.com/engine/install/) and start it, then make sure the user running Harness may use it.',
+  runtime: 'Install gVisor (https://gvisor.dev/docs/user_guide/install/), register it with `sudo runsc install`, then `sudo systemctl reload docker`. Code never falls back to ordinary Docker.',
+  image: (image: string): string => `Build the worker image: \`docker build -t ${image} <package>/worker\` after \`pnpm run build\`, or use Build worker image.`,
+  dataDir: 'Choose a data folder the container user can traverse, outside a private home directory (Settings > Code needs a restart for this one, or set dataDir in cordis.patch.yml).',
+} as const
+
+const UNITS: Record<string, number> = { b: 1, kb: 1e3, mb: 1e6, gb: 1e9, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4 }
+
+/**
+ * Parse a Docker size such as `12.5MiB`.
+ * @param text - size text.
+ * @returns bytes.
+ */
+export function parseSize(text: string): number {
+  const match = /^\s*([\d.]+)\s*([a-zA-Z]*)\s*$/.exec(text)
+  if (match === null) return 0
+  return Math.round(Number(match[1]) * (UNITS[(match[2] ?? 'b').toLowerCase() || 'b'] ?? 1))
+}
+
+/**
+ * Parse one `docker stats --format '{{json .}}'` line.
+ * @param line - JSON line.
+ * @param limits - configured limits, for the process limit.
+ * @param diskBytes - checkout size.
+ * @returns usage.
+ */
+export function parseStats(line: string, limits: ResourceLimits, diskBytes: number): WorkspaceUsage {
+  const raw = JSON.parse(line.trim().split('\n')[0] ?? '{}') as { CPUPerc?: string; MemUsage?: string; PIDs?: string }
+  const [used, limit] = (raw.MemUsage ?? '0B / 0B').split('/')
+  return {
+    cpuPercent: Number.parseFloat(raw.CPUPerc ?? '0') || 0,
+    memoryBytes: parseSize(used ?? '0'),
+    memoryLimitBytes: parseSize(limit ?? '0') || limits.memoryMb * 1024 * 1024,
+    pids: Number.parseInt(raw.PIDs ?? '0', 10) || 0,
+    pidsLimit: limits.pids,
+    diskBytes,
   }
 }
 

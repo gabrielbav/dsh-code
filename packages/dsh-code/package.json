@@ -1,6 +1,6 @@
 {
   "name": "@gabrielbav/dsh-code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Code mode for DeepSeek Harness: per-session Docker + gVisor workspaces with repository and branch selection",
   "license": "MIT",
   "type": "module",
@@ -11,6 +11,12 @@
   },
   "engines": {
     "node": ">=24.9.0"
+  },
+  "scripts": {
+    "prepack": "node -e \"for (const f of ['lib/host/workspaces-service.js','lib/client.js','worker/fs-helper.js']) require('node:fs').accessSync(f)\""
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "main": "lib/host/workspaces-service.js",
   "types": "lib/types/host/workspaces-service.d.ts",
@@ -24,8 +30,8 @@
       "default": "./lib/host/subprocess-docker.js"
     },
     "./fs": {
-      "types": "./lib/types/host/fs-confined.d.ts",
-      "default": "./lib/host/fs-confined.js"
+      "types": "./lib/types/host/fs-container.d.ts",
+      "default": "./lib/host/fs-container.js"
     },
     "./client": {
       "types": "./lib/types/client/index.d.ts",
@@ -54,6 +60,7 @@
     "lib/typert.remote-client.d.ts.map",
     "cordis.patch.yml",
     "worker/Dockerfile",
+    "worker/fs-helper.js",
     "README.md"
   ],
   "dsh": {
