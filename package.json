@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "node scripts/build.ts",
-    "typecheck": "tsc -b tsconfig.host.json tsconfig.client.json --noEmit",
+    "typecheck": "tsc -b tsconfig.host.json tsconfig.client.json",
     "test": "vitest run",
     "test:docker": "DSH_CODE_DOCKER_TESTS=1 vitest run packages/dsh-code/tests/integration"
   },
