@@ -9,6 +9,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
 import { mkdir, realpath } from 'node:fs/promises'
+import { mkdirSync, realpathSync } from 'node:fs'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import z from '@deepseek-ai/schemastery'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -18,7 +20,9 @@ import type {} from '@deepseek-ai/dsh-working-directory'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { WorkspaceError, WorkspaceManager, type WorkspaceRecord } from '../core/workspaces.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { AccountRepositories, BranchList, CodeSessionView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment } from '../types.ts'
+import type { AccountRepositories, BranchList, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
+import { PREVIEW_PREFIX, PreviewProxy } from './preview.ts'
 import { Git, gitRunner } from '../core/git.ts'
 import { DEFAULT_ALLOW, type EgressMode } from '../egress/policy.ts'
 
@@ -54,6 +58,7 @@ export interface Config {
   allow: string[]
   privateAllow: string[]
   ports: number[]
+  previewPorts: number[]
   presetId: string
   defaultAccount: string
 }
@@ -61,7 +66,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   // A root host keeps data outside /root, which the non-root container user cannot traverse.
   dataDir: z.string().default(process.getuid?.() === 0 ? '/var/lib/dsh-code' : join(homedir(), '.dsh-code')).description('Workspaces, mirrors and records'),
-  workerImage: z.string().default('dsh-code-worker:0.1.0').description('Worker image; pin by digest in production'),
+  workerImage: z.string().default('dsh-code-worker:0.2.0').description('Worker image; pin by digest in production'),
   proxyImage: z.string().default('node:24-alpine').description('Image that runs the egress proxy'),
   cpus: z.number().default(2),
   memoryMb: z.number().default(4096),
@@ -74,6 +79,7 @@ export const Config: z<Config> = z.object({
   allow: z.array(z.string()).default([...DEFAULT_ALLOW]),
   privateAllow: z.array(z.string()).default([]),
   ports: z.array(z.number()).default([80, 443]),
+  previewPorts: z.array(z.number()).default([]).description('Container ports that may be opened as authenticated previews'),
   presetId: z.string().default('code'),
   defaultAccount: z.string().default('').description('GitHub account (gh login) new Code sessions use; empty uses the gh CLI active account'),
 })
@@ -98,6 +104,7 @@ function view(sessionId: string, record: WorkspaceRecord | undefined, selection:
 function remoteFailure(error: unknown): RemoteError<'code/failed'> {
   if (error instanceof SourceControlError) return new RemoteError('code/failed', error.message, { reason: error.code === 'auth' ? 'source-control-auth' : 'source-control' })
   if (error instanceof WorkspaceError) return new RemoteError('code/failed', error.message, { reason: error.code })
+  if (error instanceof SettingsError) return new RemoteError('code/failed', error.message, { reason: 'invalid-settings' })
   return new RemoteError('code/failed', error instanceof Error ? error.message : String(error), { reason: 'failed' })
 }
 
@@ -105,6 +112,24 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
     /** A Code operation failed; `reason` names the recovery path. */
     'code/failed': { readonly reason: string }
+  }
+}
+
+/** The part of `ctx.configEditor` (`@deepseek-ai/dsh-config-editor`) this service uses. */
+interface ConfigEditorFace {
+  edit(entry: unknown, change: (current: Record<string, unknown>) => Record<string, unknown>): Promise<void>
+}
+
+/** The part of `ctx.webServer` (`@deepseek-ai/dsh-webserver`) this service uses. */
+interface WebServerFace {
+  register(route: { kind: 'prefix'; path: string; handler(req: IncomingMessage, res: ServerResponse): void | Promise<void> }): () => void
+}
+
+function settingsOf(config: Config): CodeSettings {
+  return {
+    network: config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports,
+    cpus: config.cpus, memoryMb: config.memoryMb, pids: config.pids, tmpMb: config.tmpMb, maxWorkspaces: config.maxWorkspaces,
+    workerImage: config.workerImage, previewPorts: config.previewPorts,
   }
 }
 
@@ -119,20 +144,38 @@ export class CodeWorkspacesService extends TypertRemoteService {
   private readonly selections = new Map<string, Selection>()
   private selfTestReport: Promise<SelfTestReport> | undefined
 
+  private readonly previews: PreviewProxy
+
   /**
-   * @param ctx - host context.
+   * @param owner - host context of the `code-workspaces` row.
    * @param config - validated configuration.
    */
-  constructor(ctx: Context, readonly config: Config) {
-    super(ctx, 'codeWorkspaces')
+  constructor(private readonly owner: Context, public config: Config) {
+    super(owner, 'codeWorkspaces')
+    const ctx = owner
+    // Canonical, so the checkout path is the same string on the host and in the container.
+    mkdirSync(config.dataDir, { recursive: true })
+    const dataDir = realpathSync(config.dataDir)
     this.manager = new WorkspaceManager({
-      dataDir: config.dataDir, image: config.workerImage, proxyImage: config.proxyImage,
+      dataDir, image: config.workerImage, proxyImage: config.proxyImage,
       proxyDir: join(import.meta.dirname, '..', 'egress'),
+      workerDir: join(import.meta.dirname, '..', '..', 'worker'),
       limits: { cpus: config.cpus, memoryMb: config.memoryMb, pids: config.pids, tmpMb: config.tmpMb },
       policy: { mode: config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports },
-      uid: config.uid, gid: config.gid, maxWorkspaces: config.maxWorkspaces,
+      uid: config.uid, gid: config.gid, maxWorkspaces: config.maxWorkspaces, previewPorts: config.previewPorts,
     }, undefined, new Git(gitRunner('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'])),
     async account => this.github.credentials(account))
+    this.previews = new PreviewProxy((sessionId, port) => this.manager.previewAddress(sessionId, port))
+    // Settings > Code changes apply in place; anything else restarts the plugin as usual.
+    ctx.on('internal/update', (next: Config, restart) => {
+      if (!onlySettingsChanged(this.config, next)) return restart()
+      return this.apply(next)
+    })
+    ctx.inject(['webServer'], (scoped) => {
+      const server = scoped.get('webServer' as never) as WebServerFace | undefined
+      if (server === undefined) return
+      scoped.effect(() => server.register({ kind: 'prefix', path: PREVIEW_PREFIX, handler: (req, res) => this.previews.handle(req, res) }), 'dsh-code: preview route')
+    })
     ctx.effect(() => {
       const lifetime = new AbortController()
       void this.manager.reconcile().catch((error: unknown) => { ctx.logger('dsh-code').warn('reconcile failed: %s', String(error)) })
@@ -147,6 +190,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
       this.selections.delete(String(sessionId))
     }), 'dsh-code: leaving Code mode clears choices')
     ctx.effect(() => ctx.on('workspace/session-archived', ({ sessionId }) => {
+      this.previews.revoke(sessionId)
       void this.manager.delete(sessionId).catch((error: unknown) => { ctx.logger('dsh-code').warn('cleanup of %s failed: %s', sessionId, String(error)) })
     }), 'dsh-code: delete workspace on archive')
   }
@@ -219,6 +263,107 @@ export class CodeWorkspacesService extends TypertRemoteService {
           ? { repository: selection.repository.fullName, baseBranch: selection.baseBranch, status: 'pending' }
           : {},
     }
+  }
+
+  /** The loader entry of this row (the loader augments fibers with it). */
+  private get entry(): unknown {
+    return (this.owner.fiber as { entry?: unknown }).entry
+  }
+
+  /** Apply validated settings to the running manager. */
+  private async apply(next: Config): Promise<void> {
+    this.config = next
+    this.manager.config.image = next.workerImage
+    this.manager.config.maxWorkspaces = next.maxWorkspaces
+    this.manager.config.previewPorts = next.previewPorts
+    await this.manager.updatePolicy({ mode: next.network, allow: next.allow, privateAllow: next.privateAllow, ports: next.ports })
+    await this.manager.updateLimits({ cpus: next.cpus, memoryMb: next.memoryMb, pids: next.pids, tmpMb: next.tmpMb })
+    this.selfTestReport = undefined
+  }
+
+  /**
+   * Current Settings > Code values.
+   * @returns the settings and whether they can be saved to the profile.
+   */
+  @Remote
+  async settings(): Promise<CodeSettingsView> {
+    return { settings: settingsOf(this.config), writable: this.ctx.get('configEditor' as never) !== undefined && this.entry !== undefined }
+  }
+
+  /**
+   * Validate, apply and save Settings > Code. Running workspaces pick up the
+   * network policy at once (open tunnels the new policy refuses are closed)
+   * and CPU, memory and process limits where the runtime allows; the `/tmp`
+   * size and image apply when a workspace restarts. Only the authenticated
+   * Code UI reaches this method; agent tools cannot.
+   * @param settings - the complete new settings.
+   * @returns the saved settings.
+   */
+  @Remote
+  async updateSettings(settings: CodeSettings): Promise<CodeSettingsView> {
+    let valid: CodeSettings
+    try {
+      valid = validateSettings(settings)
+    } catch (error) {
+      throw remoteFailure(error)
+    }
+    const editor = this.ctx.get('configEditor' as never) as ConfigEditorFace | undefined
+    const entry = this.entry
+    const patch = Object.fromEntries(SETTINGS_FIELDS.map(field => [field, valid[field]]))
+    if (editor === undefined || entry === undefined) {
+      // No profile editor: apply for this run only.
+      await this.apply({ ...this.config, ...patch } as Config)
+      return { settings: settingsOf(this.config), writable: false }
+    }
+    try {
+      // The edit reloads the row; `internal/update` applies it in place.
+      await editor.edit(entry, current => ({ ...current, ...patch }))
+    } catch (error) {
+      throw remoteFailure(error)
+    }
+    if (JSON.stringify(settingsOf(this.config)) !== JSON.stringify(valid)) await this.apply({ ...this.config, ...patch } as Config)
+    return { settings: settingsOf(this.config), writable: true }
+  }
+
+  /**
+   * Build the worker image from the bundled Dockerfile, on the user's request.
+   * @returns the fresh setup report.
+   */
+  @Remote
+  async buildWorker(): Promise<SelfTestReport> {
+    try {
+      await this.manager.buildWorker()
+    } catch (error) {
+      throw remoteFailure(error)
+    }
+    return this.setupStatus(true)
+  }
+
+  /**
+   * Resource usage of a session's container.
+   * @param sessionId - session id.
+   * @returns usage, or null when the workspace is not running.
+   */
+  @Remote
+  async usage(sessionId: string): Promise<WorkspaceUsage | null> {
+    return (await this.manager.usage(sessionId).catch(() => undefined)) ?? null
+  }
+
+  /**
+   * Mint an authenticated preview link for a declared container port.
+   * @param sessionId - session id.
+   * @param port - container port listed in Settings > Code > Preview ports.
+   * @returns a same-origin path, valid for eight hours.
+   */
+  @Remote
+  async previewUrl(sessionId: string, port: number): Promise<string> {
+    if (this.ctx.get('webServer' as never) === undefined) throw new RemoteError('code/failed', 'previews need the Harness web server (dsh web)', { reason: 'unsupported' })
+    try {
+      await this.manager.previewAddress(sessionId, port)
+    } catch (error) {
+      throw remoteFailure(error)
+    }
+    return this.previews.mint(sessionId, port)
   }
 
   /**
@@ -475,6 +620,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
   @Remote
   async deleteWorkspace(sessionId: string): Promise<void> {
     this.selections.delete(sessionId)
+    this.previews.revoke(sessionId)
     try {
       await this.manager.delete(sessionId)
     } catch (error) {

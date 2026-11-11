@@ -66,10 +66,11 @@ export class DockerCli {
   /**
    * Run docker without throwing.
    * @param args - docker argv.
+   * @param signal - optional cancellation.
    * @returns the raw result.
    */
-  tryExec(args: readonly string[]): Promise<DockerResult> {
-    return this.run(args)
+  tryExec(args: readonly string[], signal?: AbortSignal): Promise<DockerResult> {
+    return this.run(args, signal === undefined ? {} : { signal })
   }
 
   /** @returns the runtimes the daemon reports, or an empty list when the daemon is unreachable. */

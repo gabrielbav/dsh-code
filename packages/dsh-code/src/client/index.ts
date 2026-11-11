@@ -4,16 +4,18 @@
  * outside the Code Workspace is replaced by a blank Code session there, so
  * Code sessions group under one sidebar Workspace. A Code session gets
  * Repository and Branch rows in the composer's + menu, a status line above
- * the composer naming the choice and the workspace state, and Diff /
- * Create PR / Restart / Delete actions in its header. Everything uses
- * documented Harness extension points; the Harness needs no changes.
+ * the composer naming the choice and the workspace state (or the failing
+ * Docker + gVisor checks), Diff / Create PR / Resources / Preview / Restart /
+ * Delete actions in its header, an Environment tab, and a Settings > Code
+ * page. Everything uses documented Harness extension points; the Harness
+ * needs no changes.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { AccountRepositories, CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment } from '../types.ts'
+import type { AccountRepositories, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { EnvironmentView, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import { CodeSettingsSection, EnvironmentView, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -41,6 +43,11 @@ interface CodeRemote {
   createPullRequest(sessionId: string, title: string, body: string): Promise<Result<string>>
   restart(sessionId: string): Promise<Result<CodeSessionView>>
   deleteWorkspace(sessionId: string): Promise<Result<void>>
+  buildWorker(): Promise<Result<SelfTestReport>>
+  usage(sessionId: string): Promise<Result<WorkspaceUsage | null>>
+  previewUrl(sessionId: string, port: number): Promise<Result<string>>
+  settings(): Promise<Result<CodeSettingsView>>
+  updateSettings(settings: CodeSettings): Promise<Result<CodeSettingsView>>
 }
 
 interface UiWorkspaceFace {
@@ -289,6 +296,18 @@ function register(ctx: Context): void {
   }, EnvironmentView as ComponentType<never>))
 
   face.slots.inject('conversation.input.dock', () => face.slots.register({
+    name: 'conversation.input.dock', id: 'dsh-code.setup', order: 15, locale: NS,
+    inject: (sessionId: string) => {
+      watch(sessionId)
+      return {
+        hooks: { presetIds }, sessionId,
+        setup: async (again: boolean) => outcome(await api().setupStatus(again)),
+        buildWorker: async () => outcome(await api().buildWorker()),
+      }
+    },
+  }, SetupNotice as ComponentType<never>))
+
+  face.slots.inject('conversation.input.dock', () => face.slots.register({
     name: 'conversation.input.dock', id: 'dsh-code.status', order: 20, locale: NS,
     inject: (sessionId: string) => {
       watch(sessionId)
@@ -313,6 +332,21 @@ function register(ctx: Context): void {
         if (result.ok) void refresh()
         return result
       },
+      usage: async () => outcome(await api().usage(sessionId)),
+      previewPorts: async () => {
+        const result = outcome(await api().settings())
+        return result.ok ? { ok: true, value: result.value.settings.previewPorts } as const : result
+      },
+      preview: async (port: number) => outcome(await api().previewUrl(sessionId, port)),
     }),
   }, SessionActions as ComponentType<never>))
+
+  face.slots.inject('settings.section', () => face.slots.register({
+    name: 'settings.section', id: 'dsh-code', order: 25, locale: NS,
+    label: () => face.locale.bind(NS)('settings.nav'),
+    inject: () => ({
+      load: async () => outcome(await api().settings()),
+      save: async (settings: CodeSettings) => outcome(await api().updateSettings(settings)),
+    }),
+  }, CodeSettingsSection as ComponentType<never>))
 }

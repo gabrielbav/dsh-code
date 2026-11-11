@@ -11,6 +11,8 @@ import { DockerCli } from '../../src/core/docker.ts'
 import { WorkspaceManager, type WorkspaceRecord } from '../../src/core/workspaces.ts'
 import { DEFAULT_ALLOW, type EgressPolicy } from '../../src/egress/policy.ts'
 import { supervisedArgv } from '../../src/host/subprocess-docker.ts'
+import { FsHelperClient } from '../../src/host/fs-helper-client.ts'
+import { FS_HELPER_PATH } from '../../src/host/fs-container.ts'
 
 const enabled = process.env.DSH_CODE_DOCKER_TESTS === '1'
 const UPSTREAM = 'dsh-code-test-upstream'
@@ -23,9 +25,10 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
   // Its own namespace: the test never sees or removes a running dsh-code's containers, networks or proxy.
   const manager = new WorkspaceManager({
     namespace: `dsh-code-it-${process.pid}`,
-    dataDir: join(root, 'data'), image: 'dsh-code-worker:0.1.0', proxyImage: 'node:24-alpine',
+    dataDir: join(root, 'data'), image: 'dsh-code-worker:0.2.0', proxyImage: 'node:24-alpine',
     proxyDir: resolve(import.meta.dirname, '../../src/egress'),
-    limits: { cpus: 1, memoryMb: 1024, pids: 256, tmpMb: 256 }, policy, uid: 1000, gid: 1000, maxWorkspaces: 4,
+    workerDir: resolve(import.meta.dirname, '../../worker'),
+    limits: { cpus: 1, memoryMb: 1024, pids: 256, tmpMb: 256 }, policy, uid: 1000, gid: 1000, maxWorkspaces: 4, previewPorts: [8000],
   })
   const repo = { fullName: 'local/origin', cloneUrl: `file://${origin}` }
   let a: WorkspaceRecord
@@ -95,6 +98,43 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     const approved = await manager.runInside(a, ['sh', '-c', `curl -sS --max-time 10 http://${UPSTREAM}:8080/`])
     expect(approved).toBe('upstream-ok')
   }, 90_000)
+
+  it('never returns a host file through the file helper while the sandbox swaps a symlink', async () => {
+    const secret = join(root, 'host-secret.txt')
+    writeFileSync(secret, 'host secret\n')
+    await manager.runInside(a, ['sh', '-c', 'echo workspace > inside.txt'])
+    await docker.exec(['exec', '-d', ...manager.execArgv(a, ['sh', '-c', `while true; do ln -sfn ${a.path}/inside.txt link; ln -sfn ${secret} link; done`], a.path, {}, false).slice(2)])
+    const client = new FsHelperClient(['docker', ...manager.execArgv(a, ['node', FS_HELPER_PATH, a.path], a.path, {}, false)], a.path)
+    const seen = new Set<string>()
+    try {
+      for (let i = 0; i < 1000; i++) {
+        seen.add(await client.call({ op: 'readText', target: { targetKey: `${a.path}/link` as never, displayPath: 'link' } }).then(String, (e: { code: string }) => e.code))
+      }
+    } finally {
+      client.close()
+      await manager.runInside(a, ['sh', '-c', 'pkill -f "ln -sfn" || true; rm -f link'])
+    }
+    expect(seen.has('host secret\n')).toBe(false)
+    expect(seen.has('workspace\n')).toBe(true)
+  }, 180_000)
+
+  it('reports resource usage and declared preview addresses', async () => {
+    const usage = await manager.usage('session-a')
+    expect(usage).toMatchObject({ pidsLimit: 256 })
+    expect(usage!.memoryBytes).toBeGreaterThan(0)
+    expect(usage!.diskBytes).toBeGreaterThan(0)
+    expect((await manager.previewAddress('session-a', 8000)).host).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
+    await expect(manager.previewAddress('session-a', 22)).rejects.toThrowError(/preview port/)
+  }, 60_000)
+
+  it('refuses a destination as soon as the policy no longer allows it', async () => {
+    await manager.updatePolicy({ ...policy, privateAllow: [] })
+    await new Promise(r => setTimeout(r, 2500))
+    const refused = await manager.runInside(a, ['sh', '-c', `curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://${UPSTREAM}:8080/`])
+    expect(refused).toBe('403')
+    await manager.updatePolicy(policy)
+    await new Promise(r => setTimeout(r, 2500))
+  }, 60_000)
 
   it('commits inside the sandbox and pushes only the session branch from the host mirror', async () => {
     await manager.runInside(a, ['sh', '-c', 'echo change >> README.md'])
