@@ -2,6 +2,8 @@
 
 Code mode for [DeepSeek Harness](https://github.com/gabrielbav/deepseek-harness): pick a repository and a branch, chat as usual, and every command and file edit the agent makes runs in an isolated Docker + gVisor workspace on its own branch.
 
+Docs: [spec](docs/spec.md) · [validation and decisions](docs/validation.md) · [plan and open work](docs/plan.md)
+
 ## What you get
 
 - **A Chat | Code switch** at the top of the sidebar. Code mode lists only Code sessions; Chat mode hides them.
