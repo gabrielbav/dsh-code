@@ -117,8 +117,6 @@ export class CodeWorkspacesService extends TypertRemoteService {
   readonly manager: WorkspaceManager
   private readonly github = new GitHubProvider()
   private readonly selections = new Map<string, Selection>()
-  /** Sessions whose committed Agent preset is Code, from `agent-preset/selected`. */
-  private readonly codeModeSessions = new Set<string>()
   /** Accounts chosen in the + menu before a repository; a selection or a record carries its own. */
   private readonly accountChoices = new Map<string, string>()
   private selfTestReport: Promise<SelfTestReport> | undefined
@@ -145,13 +143,12 @@ export class CodeWorkspacesService extends TypertRemoteService {
     ctx.effect(() => ctx.on('agent/inbox/inserted', ({ agent }) => { this.hold(agent) }), 'dsh-code: hold first message until provisioned')
     // The mode selector is how a session becomes a Code session; the agent-preset registry re-emits each committed choice.
     const presetEvents = ctx as unknown as { on(name: 'agent-preset/selected', listener: (sessionId: string, agentPreset: string) => void): () => void }
+    // Leaving Code mode before the first message drops the session's unprovisioned choices.
     ctx.effect(() => presetEvents.on('agent-preset/selected', (sessionId, agentPreset) => {
-      if (agentPreset === config.presetId) this.codeModeSessions.add(String(sessionId))
-      else {
-        this.codeModeSessions.delete(String(sessionId))
-        if (this.manager.get(String(sessionId)) === undefined) this.selections.delete(String(sessionId))
-      }
-    }), 'dsh-code: track Code mode sessions')
+      if (agentPreset === config.presetId || this.manager.get(String(sessionId)) !== undefined) return
+      this.selections.delete(String(sessionId))
+      this.accountChoices.delete(String(sessionId))
+    }), 'dsh-code: leaving Code mode clears choices')
     ctx.effect(() => ctx.on('workspace/session-archived', ({ sessionId }) => {
       void this.manager.delete(sessionId).catch((error: unknown) => { ctx.logger('dsh-code').warn('cleanup of %s failed: %s', sessionId, String(error)) })
     }), 'dsh-code: delete workspace on archive')
@@ -241,7 +238,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
     const workingDirectory = agent === undefined ? undefined : this.ctx.workingDirectory.get(agent.session)
     const record = this.manager.get(sessionId)
     const selection = this.selections.get(sessionId)
-    if (record === undefined && selection === undefined && !this.codeModeSessions.has(sessionId)) {
+    if (record === undefined && selection === undefined && !(await this.isCodeMode(sessionId))) {
       return { mode: 'host', ...workingDirectory === undefined ? {} : { workingDirectory } }
     }
     const account = this.accountOf(sessionId)
@@ -292,12 +289,23 @@ export class CodeWorkspacesService extends TypertRemoteService {
   }
 
   /**
-   * Sessions that chose Code mode in the mode selector during this Host run.
-   * @returns session ids.
+   * Whether a session runs in Code mode, read from the Harness every time (never cached here), so it
+   * holds across restarts and for sessions that start in Code mode as the default.
+   * @param sessionId - session id.
+   * @returns true when the session's Agent preset is Code or it has a Code workspace.
    */
   @Remote
-  async presetSessions(): Promise<string[]> {
-    return [...this.codeModeSessions]
+  async isCodeMode(sessionId: string): Promise<boolean> {
+    if (this.manager.get(sessionId) !== undefined) return true
+    const agent = (this.ctx.get('agents') as { get(id: string): Agent | undefined } | undefined)?.get(sessionId)
+    if (agent === undefined) return false
+    const presets = this.ctx.get('agentPresets') as {
+      composedPreset(ctx: unknown): string | undefined
+      presetForSession(session: unknown): string | null
+      readonly defaultId: string
+    } | undefined
+    if (presets === undefined) return false
+    return (presets.composedPreset(agent.ctx) ?? presets.presetForSession(agent.session) ?? presets.defaultId) === this.config.presetId
   }
 
   /**
@@ -470,7 +478,6 @@ export class CodeWorkspacesService extends TypertRemoteService {
   @Remote
   async deleteWorkspace(sessionId: string): Promise<void> {
     this.selections.delete(sessionId)
-    this.codeModeSessions.delete(sessionId)
     this.accountChoices.delete(sessionId)
     try {
       await this.manager.delete(sessionId)

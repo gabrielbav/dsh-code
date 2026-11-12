@@ -27,7 +27,7 @@ type Result<V> = { readonly ok: true; readonly value: V } | { readonly ok: false
 interface CodeRemote {
   setupStatus(refresh: boolean): Promise<Result<SelfTestReport>>
   homeWorkspace(): Promise<Result<string>>
-  presetSessions(): Promise<Result<string[]>>
+  isCodeMode(sessionId: string): Promise<Result<boolean>>
   inHomeWorkspace(sessionId: string): Promise<Result<boolean>>
   repositories(query: string | null, sessionId: string | null): Promise<Result<RepositorySummary[]>>
   branches(repository: string, sessionId: string | null): Promise<Result<BranchList>>
@@ -113,9 +113,26 @@ function register(ctx: Context): void {
   const t = face.locale.bind(NS)
   /** Sessions with a repository selected or a provisioned workspace. */
   const codeIds = cell<ReadonlySet<string>>(new Set(), sameIds)
-  /** Sessions that chose Code mode in the mode selector. */
+  /**
+   * Sessions in Code mode. A cache of the Host's answer only: every entry is fetched from
+   * `isCodeMode`, refreshed on the mode event and on each poll, and never decided here.
+   */
   const presetIds = cell<ReadonlySet<string>>(new Set(), sameIds)
-  const isCode = (sessionId: string): boolean => presetIds.getSnapshot().has(sessionId)
+  const known = new Set<string>()
+  const checkMode = async (sessionId: string): Promise<void> => {
+    known.add(sessionId)
+    const result = await api().isCodeMode(sessionId).catch(() => undefined)
+    if (result === undefined || !result.ok) return
+    const next = new Set(presetIds.getSnapshot())
+    if (result.value) next.add(sessionId)
+    else next.delete(sessionId)
+    presetIds.set(next)
+  }
+  const watch = (sessionId: string): void => { if (!known.has(sessionId)) void checkMode(sessionId) }
+  const isCode = (sessionId: string): boolean => {
+    watch(sessionId)
+    return presetIds.getSnapshot().has(sessionId)
+  }
   const views = new Map<string, Cell<CodeSessionView | null>>()
   const viewOf = (sessionId: string): Cell<CodeSessionView | null> => {
     let entry = views.get(sessionId)
@@ -130,8 +147,7 @@ function register(ctx: Context): void {
     const result = await api().sessions().catch(() => undefined)
     if (result === undefined || !result.ok) return
     codeIds.set(new Set(result.value.map(v => v.sessionId)))
-    const presets = await api().presetSessions().catch(() => undefined)
-    if (presets !== undefined && presets.ok) presetIds.set(new Set(presets.value))
+    await Promise.all([...known].map(checkMode))
     const seen = new Set<string>()
     for (const v of result.value) {
       viewOf(v.sessionId).set(v)
@@ -166,14 +182,11 @@ function register(ctx: Context): void {
   // Workspace membership is fixed at creation. The new session's own selection finds it already home.
   ctx.effect(() => face.remote.$on('agent-preset/selected', (rawId, agentPreset) => {
     const sessionId = String(rawId)
-    const next = new Set(presetIds.getSnapshot())
+    void checkMode(sessionId)
     if (agentPreset !== PRESET_ID) {
-      next.delete(sessionId)
-      presetIds.set(next)
       void refresh()
       return
     }
-    presetIds.set(next.add(sessionId))
     void api().inHomeWorkspace(sessionId).then(async (home) => {
       if (!home.ok || home.value) return
       const workspaceId = await ensureHome()
@@ -280,15 +293,18 @@ function register(ctx: Context): void {
   face.slots.inject('conversation.view', () => face.slots.register({
     name: 'conversation.view', id: 'dsh-code.environment', order: 20, locale: NS,
     label: () => t('view.environment'),
-    inject: (sessionId: string) => ({
-      hooks: { view: viewOf(sessionId), presetIds },
-      load: async () => outcome(await api().environment(sessionId)),
-    }),
+    inject: (sessionId: string) => {
+      watch(sessionId)
+      return { hooks: { view: viewOf(sessionId), presetIds }, load: async () => outcome(await api().environment(sessionId)) }
+    },
   }, EnvironmentView as ComponentType<never>))
 
   face.slots.inject('conversation.input.dock', () => face.slots.register({
     name: 'conversation.input.dock', id: 'dsh-code.status', order: 20, locale: NS,
-    inject: (sessionId: string) => ({ hooks: { view: viewOf(sessionId), presetIds }, sessionId }),
+    inject: (sessionId: string) => {
+      watch(sessionId)
+      return { hooks: { view: viewOf(sessionId), presetIds }, sessionId }
+    },
   }, WorkspaceStatusLine as ComponentType<never>))
 
   face.slots.inject('conversation.session.header.actions', () => face.slots.register({
