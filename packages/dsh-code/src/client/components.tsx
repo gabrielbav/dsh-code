@@ -50,7 +50,8 @@ function statusText(view: CodeSessionView, t: T): string | undefined {
     case 'created':
     case 'provisioning': return t('status.provisioning')
     case 'restarting': return t('status.restarting')
-    case 'ready': return t('status.ready', { branch: view.workingBranch ?? view.baseBranch })
+    // A ready workspace needs no line; the header actions show it is a Code session.
+    case 'ready': return undefined
     case 'offline': return t('status.offline')
     case 'failed': return t('status.failed', { error: view.error ?? '' })
     case 'deleting':
