@@ -87,7 +87,7 @@ The `code` preset omits tools that would act from the host on the agent's behalf
 - **Host-configured MCP servers** are Harness-wide and run on the host as before. Repository-defined MCP servers are not started for Code sessions.
 - **Repository listing** uses `gh api user/repos`. When listing fails, the picker accepts a typed `owner/name`.
 - **Linux only so far.** macOS (Colima) and Windows (WSL2) need gVisor inside the VM and are untested.
-- **Not implemented yet:** a Settings > Code page (configuration goes through `cordis.patch.yml`), a resource usage view, authenticated application previews, Remote Control, and team deployment.
+- **Not implemented yet:** per-repository environment profiles (one network policy, image and set of limits applies to every session), a credential gateway for authenticated services, a Settings > Code page (configuration goes through `cordis.patch.yml`, and policy changes need a restart), a resource usage view, authenticated application previews, Remote Control, and team deployment.
 
 ## Develop
 
