@@ -141,7 +141,10 @@ export class CodeWorkspacesService extends TypertRemoteService {
     const presetEvents = ctx as unknown as { on(name: 'agent-preset/selected', listener: (sessionId: string, agentPreset: string) => void): () => void }
     ctx.effect(() => presetEvents.on('agent-preset/selected', (sessionId, agentPreset) => {
       if (agentPreset === config.presetId) this.codeModeSessions.add(String(sessionId))
-      else this.codeModeSessions.delete(String(sessionId))
+      else {
+        this.codeModeSessions.delete(String(sessionId))
+        if (this.manager.get(String(sessionId)) === undefined) this.selections.delete(String(sessionId))
+      }
     }), 'dsh-code: track Code mode sessions')
     ctx.effect(() => ctx.on('workspace/session-archived', ({ sessionId }) => {
       void this.manager.delete(sessionId).catch((error: unknown) => { ctx.logger('dsh-code').warn('cleanup of %s failed: %s', sessionId, String(error)) })

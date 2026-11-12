@@ -2,9 +2,9 @@
  * Code plugin, browser half. A session becomes a Code session when "Code
  * mode" is chosen in the Harness mode selector: a session that chose it
  * outside the Code Workspace is replaced by a blank Code session there, so
- * Code sessions group under one sidebar Workspace. A Code session shows
- * repository and branch pickers above the composer, Repository and Branch
- * rows in the composer's + menu, a workspace status line, and Diff /
+ * Code sessions group under one sidebar Workspace. A Code session gets
+ * Repository and Branch rows in the composer's + menu, a status line above
+ * the composer naming the choice and the workspace state, and Diff /
  * Create PR / Restart / Delete actions in its header. Everything uses
  * documented Harness extension points; the Harness needs no changes.
  */
@@ -13,7 +13,7 @@ import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
 import type { CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { RepositoryPickers, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import { SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -75,6 +75,7 @@ interface ClientFace {
   }
   readonly remote: {
     $mount(contribution: unknown): Promise<() => Promise<void> | void>
+    $on(event: 'agent-preset/selected', listener: (sessionId: string, agentPreset: string) => void): () => void
     readonly codeWorkspaces: CodeRemote
     readonly agentPresets?: { select(sessionId: string, presetId: string): Promise<Result<string>> }
   }
@@ -108,7 +109,7 @@ function register(ctx: Context): void {
   const codeIds = cell<ReadonlySet<string>>(new Set(), sameIds)
   /** Sessions that chose Code mode in the mode selector. */
   const presetIds = cell<ReadonlySet<string>>(new Set(), sameIds)
-  const isCode = (sessionId: string): boolean => presetIds.getSnapshot().has(sessionId) || codeIds.getSnapshot().has(sessionId)
+  const isCode = (sessionId: string): boolean => presetIds.getSnapshot().has(sessionId)
   const views = new Map<string, Cell<CodeSessionView | null>>()
   const viewOf = (sessionId: string): Cell<CodeSessionView | null> => {
     let entry = views.get(sessionId)
@@ -124,7 +125,7 @@ function register(ctx: Context): void {
     if (result === undefined || !result.ok) return
     codeIds.set(new Set(result.value.map(v => v.sessionId)))
     const presets = await api().presetSessions().catch(() => undefined)
-    if (presets !== undefined && presets.ok) presetIds.set(new Set([...presetIds.getSnapshot(), ...presets.value]))
+    if (presets !== undefined && presets.ok) presetIds.set(new Set(presets.value))
     const seen = new Set<string>()
     for (const v of result.value) {
       viewOf(v.sessionId).set(v)
@@ -150,13 +151,13 @@ function register(ctx: Context): void {
   }
   // Choosing Code mode on a session outside the Code Workspace starts a blank Code session there instead:
   // Workspace membership is fixed at creation. The new session's own selection finds it already home.
-  const presetEvents = ctx as unknown as { on(name: 'agent-preset/selected', listener: (sessionId: string, agentPreset: string) => void): () => void }
-  ctx.effect(() => presetEvents.on('agent-preset/selected', (rawId, agentPreset) => {
+  ctx.effect(() => face.remote.$on('agent-preset/selected', (rawId, agentPreset) => {
     const sessionId = String(rawId)
     const next = new Set(presetIds.getSnapshot())
     if (agentPreset !== PRESET_ID) {
       next.delete(sessionId)
       presetIds.set(next)
+      void refresh()
       return
     }
     presetIds.set(next.add(sessionId))
@@ -235,21 +236,9 @@ function register(ctx: Context): void {
     }), 'dsh-code: + menu branch')
   })
 
-  face.slots.inject('conversation.hero.options', () => face.slots.register({
-    name: 'conversation.hero.options', id: 'dsh-code.repository', order: 10, locale: NS,
-    inject: (sessionId: string) => ({
-      hooks: { codeIds, presetIds, view: viewOf(sessionId) },
-      sessionId,
-      setup: async (again: boolean) => outcome(await api().setupStatus(again)),
-      repositories: async () => outcome(await api().repositories(null)),
-      branches: async (repository: string) => outcome(await api().branches(repository)),
-      select: async (repository: string, branch: string | null) => selectFor(sessionId, repository, branch),
-    }),
-  }, RepositoryPickers as ComponentType<never>))
-
   face.slots.inject('conversation.input.dock', () => face.slots.register({
     name: 'conversation.input.dock', id: 'dsh-code.status', order: 20, locale: NS,
-    inject: (sessionId: string) => ({ hooks: { view: viewOf(sessionId) } }),
+    inject: (sessionId: string) => ({ hooks: { view: viewOf(sessionId), presetIds }, sessionId }),
   }, WorkspaceStatusLine as ComponentType<never>))
 
   face.slots.inject('conversation.session.header.actions', () => face.slots.register({
