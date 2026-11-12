@@ -223,10 +223,12 @@ function register(ctx: Context): void {
         options: async (session) => {
           const list = outcome(await api().accounts(String(session.sessionId)))
           if (!list.ok) return fail(list)
-          return list.value.accounts.map(account => ({
-            id: account.login, label: account.login, active: account.login === list.value.current,
-            ...account.active ? { detail: t('command.activeAccount') } : {},
-          }))
+          // `active` only parks the keyboard highlight, so the account in use is also named in the row.
+          return list.value.accounts.map((account) => {
+            const inUse = account.login === list.value.current
+            const notes = [...inUse ? [t('command.inUse')] : [], ...account.active ? [t('command.activeAccount')] : []]
+            return { id: account.login, label: account.login, active: inUse, ...notes.length > 0 ? { detail: notes.join(' · ') } : {} }
+          })
         },
         onSelect: async (option, session) => {
           const sessionId = String(session.sessionId)
@@ -252,7 +254,7 @@ function register(ctx: Context): void {
           const current = viewOf(String(session.sessionId)).getSnapshot()?.repository
           const list = outcome(await api().repositories(null, String(session.sessionId)))
           if (!list.ok) return fail(list)
-          return list.value.map(repo => ({ id: repo.fullName, label: repo.fullName, active: repo.fullName === current }))
+          return list.value.map(repo => ({ id: repo.fullName, label: repo.fullName, active: repo.fullName === current, ...repo.fullName === current ? { detail: t('command.inUse') } : {} }))
         },
         onSelect: async (option, session) => {
           const result = await selectFor(String(session.sessionId), option.id, null)
@@ -276,7 +278,9 @@ function register(ctx: Context): void {
           if (!list.ok) return fail(list)
           return list.value.branches.map(name => ({
             id: name, label: name, active: name === view.baseBranch,
-            ...name === list.value.defaultBranch ? { detail: t('command.defaultBranch') } : {},
+            ...name === view.baseBranch || name === list.value.defaultBranch
+              ? { detail: [...name === view.baseBranch ? [t('command.inUse')] : [], ...name === list.value.defaultBranch ? [t('command.defaultBranch')] : []].join(' · ') }
+              : {},
           }))
         },
         onSelect: async (option, session) => {
