@@ -3,10 +3,10 @@
  * context, so ordinary Chat sessions look exactly as they do without the
  * plugin. Copy comes from the `dsh-code` locale namespace.
  */
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Button, Input, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CodeSessionView, PendingWork } from '../types.ts'
+import type { CodeSessionView, PendingWork, SessionEnvironment } from '../types.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -128,6 +128,70 @@ export function SessionActions({ useView, diff, pendingWork, createPullRequest, 
         footer={<Button variant="primary" disabled={busy} onClick={() => { void run(remove, () => null) }}>{t('delete.confirm')}</Button>}
       />
       <Modal open={dialog?.kind === 'message'} onClose={close} closeLabel={t('action.close')} title={t('dialog.title')} description={dialog?.kind === 'message' ? dialog.text : ''} />
+    </div>
+  )
+}
+
+// ── Environment tab (conversation.view) ────────────────────────────────────
+
+/** Injected face of the Environment tab. */
+export interface EnvironmentInjected {
+  readonly hooks: { readonly view: HostObservable<CodeSessionView | null>; readonly presetIds: HostObservable<ReadonlySet<string>> }
+  readonly load: () => Promise<Outcome<SessionEnvironment>>
+}
+
+const grid: CSSProperties = { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '6px 16px', fontSize: 13, margin: 0 }
+const term: CSSProperties = { opacity: 0.65 }
+const value: CSSProperties = { margin: 0, fontFamily: 'var(--dsw-font-mono, ui-monospace, monospace)', overflowWrap: 'anywhere' }
+
+/**
+ * Where this session runs: on this computer, or in an isolated Code workspace with its account, repository,
+ * branches and container. Reloads when the session's Code state changes.
+ * @param props - injected loader, state and translator.
+ * @returns the environment details.
+ */
+export function EnvironmentView({ useView, usePresetIds, load, t }: InjectFace<EnvironmentInjected> & PropsLocale<typeof NS>): ReactNode {
+  const view = useView(v => v)
+  const presets = usePresetIds(ids => ids.size)
+  const [env, setEnv] = useState<SessionEnvironment | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void load().then((result) => {
+      if (!live) return
+      if (result.ok) { setEnv(result.value); setError(null) } else setError(result.message)
+    })
+    return () => { live = false }
+  }, [load, view?.status, view?.repository, view?.baseBranch, view?.account, presets])
+  if (error !== null) return <div style={{ ...note, padding: 16 }} role="alert">{t('error.generic', { error })}</div>
+  if (env === null) return <div style={{ ...note, padding: 16 }}>{t('picker.loading')}</div>
+  const rows: [string, string | undefined][] = env.mode === 'host'
+    ? [[t('env.runs'), t('env.host')], [t('env.directory'), env.workingDirectory]]
+    : [
+      [t('env.runs'), t('env.code')],
+      [t('env.account'), env.account],
+      [t('env.repository'), env.repository ?? t('env.notChosen')],
+      [t('env.baseBranch'), env.baseBranch],
+      [t('env.baseCommit'), env.baseCommit?.slice(0, 12)],
+      [t('env.workingBranch'), env.workingBranch],
+      [t('env.status'), env.status],
+      [t('env.directory'), env.workingDirectory],
+      [t('env.container'), env.container?.name],
+      [t('env.runtime'), env.container === undefined ? undefined : `${env.container.runtime} (gVisor)`],
+      [t('env.image'), env.container?.image],
+      [t('env.network'), env.container === undefined ? undefined : t('env.networkValue', { mode: env.container.network })],
+      [t('env.limits'), env.container === undefined ? undefined : t('env.limitsValue', { cpus: String(env.container.cpus), memory: String(env.container.memoryMb) })],
+    ]
+  return (
+    <div style={{ padding: 16, maxWidth: 760 }}>
+      <dl style={grid}>
+        {rows.filter((row): row is [string, string] => row[1] !== undefined && row[1] !== '').map(([k, v]) => (
+          <div key={k} style={{ display: 'contents' }}>
+            <dt style={term}>{k}</dt>
+            <dd style={value}>{v}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   )
 }

@@ -9,7 +9,7 @@ import type { BranchList, RepositorySummary } from '../types.ts'
 export type { BranchList, RepositorySummary } from '../types.ts'
 
 /** Runs `gh` with argv and resolves with stdout. */
-export type GhRunner = (args: readonly string[]) => Promise<string>
+export type GhRunner = (args: readonly string[], env?: Readonly<Record<string, string>>) => Promise<string>
 
 /** Failure from the GitHub CLI, classified for the UI. */
 export class SourceControlError extends Error {
@@ -31,8 +31,8 @@ export class SourceControlError extends Error {
  * @returns a runner.
  */
 export function ghRunner(binary = 'gh'): GhRunner {
-  return args => new Promise((resolve, reject) => {
-    execFile(binary, [...args], { env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' }, maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
+  return (args, env) => new Promise((resolve, reject) => {
+    execFile(binary, [...args], { env: { ...process.env, ...env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' }, maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error === null) {
         resolve(stdout)
         return
@@ -44,12 +44,49 @@ export function ghRunner(binary = 'gh'): GhRunner {
   })
 }
 
+/** One account the gh CLI is signed in with. */
+export interface GitHubAccount {
+  readonly login: string
+  readonly active: boolean
+}
+
 const FULL_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
 /** GitHub operations for Code sessions. */
 export class GitHubProvider {
   /** @param gh - CLI runner. */
   constructor(private readonly gh: GhRunner = ghRunner()) {}
+
+  /**
+   * The same provider with extra environment on every call, such as `GH_TOKEN` for one account.
+   * @param env - variables added to each gh process.
+   * @returns a bound provider.
+   */
+  withEnv(env: Readonly<Record<string, string>>): GitHubProvider {
+    return new GitHubProvider((args, more) => this.gh(args, { ...env, ...more }))
+  }
+
+  /**
+   * GitHub accounts the host's gh CLI is signed in with.
+   * @returns logins, the active one marked.
+   */
+  async accounts(): Promise<GitHubAccount[]> {
+    const raw = JSON.parse(await this.gh(['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'])) as { hosts?: Record<string, readonly { login: string; active: boolean; state: string }[]> }
+    return (raw.hosts?.['github.com'] ?? []).filter(a => a.state === 'success').map(a => ({ login: a.login, active: a.active }))
+  }
+
+  /**
+   * Environment that makes gh and the git credential helper act as one account. The token stays in the
+   * host process: it is passed to gh and git child processes only, never to a workspace.
+   * @param login - account login; empty for the active account.
+   * @returns `GH_TOKEN` for that account, or nothing for the active one.
+   */
+  async credentials(login: string): Promise<Readonly<Record<string, string>>> {
+    if (login === '') return {}
+    const token = (await this.gh(['auth', 'token', '--hostname', 'github.com', '--user', login])).trim()
+    if (token === '') throw new SourceControlError('auth', `gh has no token for ${login}`)
+    return { GH_TOKEN: token }
+  }
 
   /**
    * Repositories the signed-in identity can access, most recently updated first.

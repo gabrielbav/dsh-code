@@ -11,9 +11,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult } from '../types.ts'
-import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import type { AccountList, CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment } from '../types.ts'
+import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular, IconUserOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { EnvironmentView, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -29,8 +29,11 @@ interface CodeRemote {
   homeWorkspace(): Promise<Result<string>>
   presetSessions(): Promise<Result<string[]>>
   inHomeWorkspace(sessionId: string): Promise<Result<boolean>>
-  repositories(query: string | null): Promise<Result<RepositorySummary[]>>
-  branches(repository: string): Promise<Result<BranchList>>
+  repositories(query: string | null, sessionId: string | null): Promise<Result<RepositorySummary[]>>
+  branches(repository: string, sessionId: string | null): Promise<Result<BranchList>>
+  accounts(sessionId: string): Promise<Result<AccountList>>
+  chooseAccount(sessionId: string, login: string): Promise<Result<CodeSessionView | null>>
+  environment(sessionId: string): Promise<Result<SessionEnvironment>>
   select(sessionId: string, repository: string, baseBranch: string | null): Promise<Result<CodeSessionView>>
   sessions(): Promise<Result<CodeSessionView[]>>
   diff(sessionId: string): Promise<Result<string>>
@@ -67,7 +70,7 @@ interface CommandUiFace {
 interface ClientFace {
   readonly slots: {
     inject(name: string, factory: () => () => void): void
-    register(options: { readonly name: string; readonly id: string; readonly order?: number; readonly locale?: string; readonly inject?: (sessionId: string) => object }, component: ComponentType<never>): () => void
+    register(options: { readonly name: string; readonly id: string; readonly order?: number; readonly locale?: string; readonly label?: () => string; readonly inject?: (sessionId: string) => object }, component: ComponentType<never>): () => void
   }
   readonly locale: {
     register(ns: string, dicts: Record<string, Record<string, string>>): () => void
@@ -182,9 +185,37 @@ function register(ctx: Context): void {
   }
   const fail = (result: Outcome<unknown>): never => { throw new Error(result.ok ? '' : result.message) }
 
-  // Repository and Branch in the composer's + menu (also reachable as /repository and /branch).
+  // Account, Repository and Branch in the composer's + menu (also reachable as /account, /repository and /branch).
   ctx.inject(['commandUi'], (scope) => {
     const commands = scope.get('commandUi' as never) as unknown as CommandUiFace
+    scope.effect(() => commands.register({
+      name: 'account',
+      label: () => t('command.account'),
+      description: () => t('command.accountDescription'),
+      icon: IconUserOutlineRegular,
+      available: session => editable(String(session.sessionId)),
+      ui: {
+        kind: 'popupSelect',
+        searchLabels: () => ({ placeholder: t('command.searchAccounts'), empty: t('command.noAccounts'), noResults: t('command.noMatch') }),
+        options: async (session) => {
+          const list = outcome(await api().accounts(String(session.sessionId)))
+          if (!list.ok) return fail(list)
+          return list.value.accounts.map(account => ({
+            id: account.login, label: account.login, active: account.login === list.value.current,
+            ...account.active ? { detail: t('command.activeAccount') } : {},
+          }))
+        },
+        onSelect: async (option, session) => {
+          const sessionId = String(session.sessionId)
+          const result = outcome(await api().chooseAccount(sessionId, option.id))
+          if (!result.ok) fail(result)
+          else {
+            viewOf(sessionId).set(result.value)
+            if (result.value === null) codeIds.set(new Set([...codeIds.getSnapshot()].filter(id => id !== sessionId)))
+          }
+        },
+      },
+    }), 'dsh-code: + menu account')
     scope.effect(() => commands.register({
       name: 'repository',
       label: () => t('command.repository'),
@@ -196,7 +227,7 @@ function register(ctx: Context): void {
         searchLabels: () => ({ placeholder: t('picker.search'), empty: t('command.noRepositories'), noResults: t('command.noMatch') }),
         options: async (session) => {
           const current = viewOf(String(session.sessionId)).getSnapshot()?.repository
-          const list = outcome(await api().repositories(null))
+          const list = outcome(await api().repositories(null, String(session.sessionId)))
           if (!list.ok) return fail(list)
           return list.value.map(repo => ({ id: repo.fullName, label: repo.fullName, active: repo.fullName === current }))
         },
@@ -218,7 +249,7 @@ function register(ctx: Context): void {
         options: async (session) => {
           const view = viewOf(String(session.sessionId)).getSnapshot()
           if (view === null) throw new Error(t('command.chooseRepositoryFirst'))
-          const list = outcome(await api().branches(view.repository))
+          const list = outcome(await api().branches(view.repository, String(session.sessionId)))
           if (!list.ok) return fail(list)
           return list.value.branches.map(name => ({
             id: name, label: name, active: name === view.baseBranch,
@@ -235,6 +266,15 @@ function register(ctx: Context): void {
       },
     }), 'dsh-code: + menu branch')
   })
+
+  face.slots.inject('conversation.view', () => face.slots.register({
+    name: 'conversation.view', id: 'dsh-code.environment', order: 20, locale: NS,
+    label: () => t('view.environment'),
+    inject: (sessionId: string) => ({
+      hooks: { view: viewOf(sessionId), presetIds },
+      load: async () => outcome(await api().environment(sessionId)),
+    }),
+  }, EnvironmentView as ComponentType<never>))
 
   face.slots.inject('conversation.input.dock', () => face.slots.register({
     name: 'conversation.input.dock', id: 'dsh-code.status', order: 20, locale: NS,

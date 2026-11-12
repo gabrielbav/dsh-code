@@ -41,6 +41,8 @@ export interface BranchList {
 /** Client view of one Code session. */
 export interface CodeSessionView {
   readonly sessionId: string
+  /** GitHub account (gh login) the workspace clones and pushes with. */
+  readonly account: string
   readonly repository: string
   readonly baseBranch: string
   readonly baseCommit?: string
@@ -59,4 +61,38 @@ export interface PendingWork {
 export interface PushResult {
   readonly sha: string
   readonly branch: string
+}
+
+/** One account the host's gh CLI is signed in with. */
+export interface AccountOption {
+  readonly login: string
+  /** The gh CLI's active account. */
+  readonly active: boolean
+}
+
+/** Accounts a Code session can use, and the one it uses now. */
+export interface AccountList {
+  readonly accounts: readonly AccountOption[]
+  readonly current: string
+}
+
+/** What the Environment tab shows about where a session runs. */
+export interface SessionEnvironment {
+  /** `code`: an isolated gVisor workspace; `host`: directly on this computer. */
+  readonly mode: 'code' | 'host'
+  readonly workingDirectory?: string
+  readonly account?: string
+  readonly repository?: string
+  readonly baseBranch?: string
+  readonly baseCommit?: string
+  readonly workingBranch?: string
+  readonly status?: string
+  readonly container?: {
+    readonly name: string
+    readonly image: string
+    readonly runtime: string
+    readonly network: string
+    readonly cpus: number
+    readonly memoryMb: number
+  }
 }

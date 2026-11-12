@@ -22,6 +22,8 @@ export interface WorkspaceRecord {
   readonly workspaceId: string
   readonly sessionId: string
   readonly repository: RepositoryRef
+  /** GitHub account that clones and pushes; absent means the gh CLI's active account. */
+  readonly account?: string
   readonly baseBranch: string
   readonly baseCommit: string
   readonly workingBranch: string
@@ -83,7 +85,13 @@ export class WorkspaceManager {
    * @param docker - Docker CLI.
    * @param git - host Git.
    */
-  constructor(readonly config: WorkspaceManagerConfig, private readonly docker = new DockerCli(), private readonly git = new Git()) {
+  constructor(
+    readonly config: WorkspaceManagerConfig,
+    private readonly docker = new DockerCli(),
+    private readonly git = new Git(),
+    /** Host-only environment that makes git act as one GitHub account; never reaches a workspace. */
+    private readonly credentials: (account: string) => Promise<Readonly<Record<string, string>>> = async () => ({}),
+  ) {
     if (config.uid === 0 || config.gid === 0) throw new WorkspaceError('unsafe-state', 'workspace uid/gid must not be 0')
   }
 
@@ -229,17 +237,21 @@ export class WorkspaceManager {
    * @param onProgress - progress callback for the UI.
    * @returns the ready record.
    */
-  provision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string) => void = () => {}): Promise<WorkspaceRecord> {
+  provision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string) => void = () => {}, account: string = ''): Promise<WorkspaceRecord> {
     const existing = this.records.get(sessionId)
     if (existing !== undefined && existing.status === 'ready') return Promise.resolve(existing)
     const inflight = this.pending.get(sessionId)
     if (inflight !== undefined) return inflight
-    const attempt = this.doProvision(sessionId, repository, baseBranch, onProgress).finally(() => { this.pending.delete(sessionId) })
+    const attempt = this.doProvision(sessionId, repository, baseBranch, onProgress, account).finally(() => { this.pending.delete(sessionId) })
     this.pending.set(sessionId, attempt)
     return attempt
   }
 
-  private async doProvision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string) => void): Promise<WorkspaceRecord> {
+  private async gitAs(account: string | undefined): Promise<Git> {
+    return account === undefined || account === '' ? this.git : this.git.withEnv(await this.credentials(account))
+  }
+
+  private async doProvision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string) => void, account: string): Promise<WorkspaceRecord> {
     const live = [...this.records.values()].filter(r => r.status !== 'deleted' && r.sessionId !== sessionId).length
     if (live >= this.config.maxWorkspaces) throw new WorkspaceError('limit-reached', `at most ${this.config.maxWorkspaces} Code workspaces may run on this host`)
     onProgress('checking-runtime')
@@ -258,11 +270,12 @@ export class WorkspaceManager {
       await mkdir(join(this.config.dataDir, 'workspaces'), { recursive: true })
       await mkdir(join(this.config.dataDir, 'mirrors'), { recursive: true })
       onProgress('cloning')
-      const checkout = await this.git.prepareCheckout(repository, baseBranch, path, workingBranch)
-      await this.git.createMirror(repository, mirrorPath)
+      const git = await this.gitAs(account)
+      const checkout = await git.prepareCheckout(repository, baseBranch, path, workingBranch)
+      await git.createMirror(repository, mirrorPath)
       await chownTree(path, this.config.uid, this.config.gid)
       record = {
-        workspaceId, sessionId, repository, baseBranch, baseCommit: checkout.baseCommit, workingBranch,
+        workspaceId, sessionId, repository, ...account === '' ? {} : { account }, baseBranch, baseCommit: checkout.baseCommit, workingBranch,
         path, mirrorPath, containerName: `dsh-code-${workspaceId.slice(0, 12)}`, image: this.config.image,
         runtime: REQUIRED_RUNTIME, status: 'provisioning', createdAt: now, updatedAt: now,
       }
@@ -304,7 +317,7 @@ export class WorkspaceManager {
   restart(sessionId: string): Promise<WorkspaceRecord> {
     const record = this.records.get(sessionId)
     if (record === undefined) return Promise.reject(new WorkspaceError('not-found', `no workspace for session ${sessionId}`))
-    return this.provision(sessionId, record.repository, record.baseBranch)
+    return this.provision(sessionId, record.repository, record.baseBranch, undefined, record.account)
   }
 
   /**
@@ -375,7 +388,7 @@ export class WorkspaceManager {
     const copy = `${record.mirrorPath}.bundle`
     await copyRegularFile(outbox, copy)
     try {
-      const sha = await this.git.pushFromBundle(record.mirrorPath, copy, record.workingBranch)
+      const sha = await (await this.gitAs(record.account)).pushFromBundle(record.mirrorPath, copy, record.workingBranch)
       return { sha, branch: record.workingBranch }
     } finally {
       await rm(copy, { force: true })

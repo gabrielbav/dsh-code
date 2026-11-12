@@ -15,7 +15,7 @@ import type { RepositoryRef } from '../types.ts'
 export type { RepositoryRef } from '../types.ts'
 
 /** Runs `git` with argv in a directory. */
-export type GitRunner = (args: readonly string[], cwd?: string) => Promise<string>
+export type GitRunner = (args: readonly string[], cwd?: string, env?: Readonly<Record<string, string>>) => Promise<string>
 
 /** Failure of a git invocation, with stderr kept for diagnostics. */
 export class GitError extends Error {
@@ -36,10 +36,10 @@ export class GitError extends Error {
  * @returns a runner.
  */
 export function gitRunner(binary = 'git', prefix: readonly string[] = []): GitRunner {
-  return (args, cwd) => new Promise((resolve, reject) => {
+  return (args, cwd, env) => new Promise((resolve, reject) => {
     execFile(binary, [...prefix, ...args], {
       cwd, maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' },
+      env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' },
     }, (error, stdout, stderr) => {
       if (error !== null) reject(new GitError(args, stderr || error.message))
       else resolve(stdout.trim())
@@ -72,6 +72,15 @@ export interface Checkout {
 export class Git {
   /** @param run - git runner. */
   constructor(private readonly run: GitRunner = gitRunner()) {}
+
+  /**
+   * The same host Git with extra environment on every call, such as `GH_TOKEN` for one GitHub account.
+   * @param env - variables added to each git process.
+   * @returns a bound Git.
+   */
+  withEnv(env: Readonly<Record<string, string>>): Git {
+    return new Git((args, cwd, more) => this.run(args, cwd, { ...env, ...more }))
+  }
 
   /**
    * Resolve a branch to a commit on the remote without cloning.

@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-working-directory'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { WorkspaceError, WorkspaceManager, type WorkspaceRecord } from '../core/workspaces.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { BranchList, CodeSessionView, PendingWork, PushResult, RepositorySummary, SelfTestReport } from '../types.ts'
+import type { AccountList, BranchList, CodeSessionView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment } from '../types.ts'
 import { Git, gitRunner } from '../core/git.ts'
 import { DEFAULT_ALLOW, type EgressMode } from '../egress/policy.ts'
 
@@ -55,6 +55,7 @@ export interface Config {
   privateAllow: string[]
   ports: number[]
   presetId: string
+  defaultAccount: string
 }
 
 export const Config: z<Config> = z.object({
@@ -74,21 +75,23 @@ export const Config: z<Config> = z.object({
   privateAllow: z.array(z.string()).default([]),
   ports: z.array(z.number()).default([80, 443]),
   presetId: z.string().default('code'),
+  defaultAccount: z.string().default('').description('GitHub account (gh login) new Code sessions use; empty uses the gh CLI active account'),
 })
 
 interface Selection {
   readonly repository: RepositorySummary
   readonly baseBranch: string
+  readonly account: string
 }
 
 function view(sessionId: string, record: WorkspaceRecord | undefined, selection: Selection | undefined): CodeSessionView | undefined {
   if (record !== undefined) {
     return {
-      sessionId, repository: record.repository.fullName, baseBranch: record.baseBranch, baseCommit: record.baseCommit,
+      sessionId, account: record.account ?? '', repository: record.repository.fullName, baseBranch: record.baseBranch, baseCommit: record.baseCommit,
       workingBranch: record.workingBranch, status: record.status, ...(record.error === undefined ? {} : { error: record.error }),
     }
   }
-  if (selection !== undefined) return { sessionId, repository: selection.repository.fullName, baseBranch: selection.baseBranch, status: 'pending' }
+  if (selection !== undefined) return { sessionId, account: selection.account, repository: selection.repository.fullName, baseBranch: selection.baseBranch, status: 'pending' }
   return undefined
 }
 
@@ -116,6 +119,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
   private readonly selections = new Map<string, Selection>()
   /** Sessions whose committed Agent preset is Code, from `agent-preset/selected`. */
   private readonly codeModeSessions = new Set<string>()
+  /** Accounts chosen in the + menu before a repository; a selection or a record carries its own. */
+  private readonly accountChoices = new Map<string, string>()
   private selfTestReport: Promise<SelfTestReport> | undefined
 
   /**
@@ -130,7 +135,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
       limits: { cpus: config.cpus, memoryMb: config.memoryMb, pids: config.pids, tmpMb: config.tmpMb },
       policy: { mode: config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports },
       uid: config.uid, gid: config.gid, maxWorkspaces: config.maxWorkspaces,
-    }, undefined, new Git(gitRunner('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'])))
+    }, undefined, new Git(gitRunner('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'])),
+    async account => this.github.credentials(account))
     ctx.effect(() => {
       const lifetime = new AbortController()
       void this.manager.reconcile().catch((error: unknown) => { ctx.logger('dsh-code').warn('reconcile failed: %s', String(error)) })
@@ -163,7 +169,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
         await Promise.resolve()
         if (signal.aborted) return
         const ready = record === undefined
-          ? await this.manager.provision(sessionId, selection!.repository, selection!.baseBranch)
+          ? await this.manager.provision(sessionId, selection!.repository, selection!.baseBranch, undefined, selection!.account)
           : await this.manager.restart(sessionId)
         await this.ctx.workingDirectory.set(agent, ready.path, signal)
         this.selections.delete(sessionId)
@@ -172,6 +178,90 @@ export class CodeWorkspacesService extends TypertRemoteService {
       // A turn or maintenance already owns the Agent; the message proceeds and
       // the preset's providers refuse to run outside a ready workspace.
       this.ctx.logger('dsh-code').debug('hold skipped for %s: %s', sessionId, String(error))
+    }
+  }
+
+  /** The account a session uses: its record, its selection, a + menu choice, then the configured default. */
+  private accountOf(sessionId: string | null): string {
+    if (sessionId === null) return this.config.defaultAccount
+    return this.manager.get(sessionId)?.account ?? this.selections.get(sessionId)?.account
+      ?? this.accountChoices.get(sessionId) ?? this.config.defaultAccount
+  }
+
+  private async githubAs(account: string): Promise<GitHubProvider> {
+    return account === '' ? this.github : this.github.withEnv(await this.github.credentials(account))
+  }
+
+  /**
+   * GitHub accounts this session can use.
+   * @param sessionId - session id.
+   * @returns the gh CLI's signed-in accounts and the session's current one.
+   */
+  @Remote
+  async accounts(sessionId: string): Promise<AccountList> {
+    try {
+      const accounts = await this.github.accounts()
+      const chosen = this.accountOf(sessionId)
+      return { accounts, current: chosen !== '' ? chosen : accounts.find(a => a.active)?.login ?? '' }
+    } catch (error) {
+      throw remoteFailure(error)
+    }
+  }
+
+  /**
+   * Choose the GitHub account of a blank Code session. A repository chosen with
+   * another account is dropped, since this account may not reach it.
+   * @param sessionId - session id.
+   * @param login - gh login.
+   * @returns the session view, or null when no repository is chosen.
+   */
+  @Remote
+  async chooseAccount(sessionId: string, login: string): Promise<CodeSessionView | null> {
+    if (this.manager.get(sessionId) !== undefined) throw new RemoteError('code/failed', 'the account of a started Code session cannot change', { reason: 'fixed' })
+    try {
+      if (!(await this.github.accounts()).some(a => a.login === login)) throw new RemoteError('code/failed', `gh is not signed in as ${login}`, { reason: 'source-control-auth' })
+    } catch (error) {
+      throw error instanceof RemoteError ? error : remoteFailure(error)
+    }
+    const previous = this.selections.get(sessionId)
+    this.accountChoices.set(sessionId, login)
+    if (previous !== undefined && previous.account !== login) this.selections.delete(sessionId)
+    return view(sessionId, undefined, this.selections.get(sessionId)) ?? null
+  }
+
+  /**
+   * Where a session runs, for the Environment tab.
+   * @param sessionId - session id.
+   * @returns the session's environment.
+   */
+  @Remote
+  async environment(sessionId: string): Promise<SessionEnvironment> {
+    const agents = this.ctx.get('agents') as { get(id: string): Agent | undefined } | undefined
+    const agent = agents?.get(sessionId)
+    const workingDirectory = agent === undefined ? undefined : this.ctx.workingDirectory.get(agent.session)
+    const record = this.manager.get(sessionId)
+    const selection = this.selections.get(sessionId)
+    if (record === undefined && selection === undefined && !this.codeModeSessions.has(sessionId)) {
+      return { mode: 'host', ...workingDirectory === undefined ? {} : { workingDirectory } }
+    }
+    const account = this.accountOf(sessionId)
+    const login = account !== '' ? account : (await this.github.accounts().catch(() => [])).find(a => a.active)?.login
+    return {
+      mode: 'code',
+      ...workingDirectory === undefined ? {} : { workingDirectory },
+      ...login === undefined ? {} : { account: login },
+      ...record !== undefined
+        ? {
+          repository: record.repository.fullName, baseBranch: record.baseBranch, baseCommit: record.baseCommit,
+          workingBranch: record.workingBranch, status: record.status,
+          container: {
+            name: record.containerName, image: record.image, runtime: record.runtime, network: this.config.network,
+            cpus: this.config.cpus, memoryMb: this.config.memoryMb,
+          },
+        }
+        : selection !== undefined
+          ? { repository: selection.repository.fullName, baseBranch: selection.baseBranch, status: 'pending' }
+          : {},
     }
   }
 
@@ -227,14 +317,15 @@ export class CodeWorkspacesService extends TypertRemoteService {
   }
 
   /**
-   * Repositories the host's source control identity can access.
+   * Repositories the session's GitHub account can access.
    * @param query - optional filter text.
+   * @param sessionId - the session whose account to use; null uses the default account.
    * @returns repositories, most recently updated first.
    */
   @Remote
-  async repositories(query: string | null): Promise<RepositorySummary[]> {
+  async repositories(query: string | null, sessionId: string | null): Promise<RepositorySummary[]> {
     try {
-      return await this.github.repositories(query ?? undefined)
+      return await (await this.githubAs(this.accountOf(sessionId))).repositories(query ?? undefined)
     } catch (error) {
       throw remoteFailure(error)
     }
@@ -243,12 +334,13 @@ export class CodeWorkspacesService extends TypertRemoteService {
   /**
    * Branches of one repository, default first.
    * @param repository - `owner/name`.
+   * @param sessionId - the session whose account to use; null uses the default account.
    * @returns branches.
    */
   @Remote
-  async branches(repository: string): Promise<BranchList> {
+  async branches(repository: string, sessionId: string | null): Promise<BranchList> {
     try {
-      return await this.github.branches(repository)
+      return await (await this.githubAs(this.accountOf(sessionId))).branches(repository)
     } catch (error) {
       throw remoteFailure(error)
     }
@@ -267,8 +359,9 @@ export class CodeWorkspacesService extends TypertRemoteService {
   async select(sessionId: string, repository: string, baseBranch: string | null): Promise<CodeSessionView> {
     if (this.manager.get(sessionId) !== undefined) throw new RemoteError('code/failed', 'the repository of a started Code session cannot change', { reason: 'fixed' })
     try {
-      const repo = await this.github.repository(repository)
-      const selection = { repository: repo, baseBranch: baseBranch ?? repo.defaultBranch }
+      const account = this.accountOf(sessionId)
+      const repo = await (await this.githubAs(account)).repository(repository)
+      const selection = { repository: repo, baseBranch: baseBranch ?? repo.defaultBranch, account }
       this.selections.set(sessionId, selection)
       return view(sessionId, undefined, selection)!
     } catch (error) {
@@ -348,7 +441,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
     if (record === undefined) throw new RemoteError('code/failed', 'not a Code session', { reason: 'not-found' })
     try {
       await this.manager.commitAndPush(sessionId, title)
-      return await this.github.createPullRequest(record.repository.fullName, record.workingBranch, record.baseBranch, title, body)
+      return await (await this.githubAs(record.account ?? '')).createPullRequest(record.repository.fullName, record.workingBranch, record.baseBranch, title, body)
     } catch (error) {
       throw remoteFailure(error)
     }
@@ -378,6 +471,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
   async deleteWorkspace(sessionId: string): Promise<void> {
     this.selections.delete(sessionId)
     this.codeModeSessions.delete(sessionId)
+    this.accountChoices.delete(sessionId)
     try {
       await this.manager.delete(sessionId)
     } catch (error) {
