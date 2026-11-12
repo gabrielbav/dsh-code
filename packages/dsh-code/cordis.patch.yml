@@ -1,8 +1,9 @@
 # dsh-code bundle patch.
 #
 # Host plane: `code-workspaces` owns Docker + gVisor workspaces and serves the
-# Code UI's Remote API; its client half (`./client`) adds the Chat | Code
-# switch, repository and branch pickers, status line and session actions.
+# Code UI's Remote API; its client half (`./client`) adds repository and branch
+# pickers (above the composer and in its + menu), the status line and session
+# actions to sessions that choose "Code mode" in the mode selector.
 #
 # Agent plane: the `code` preset keeps the chat experience of the standard
 # preset and swaps execution. `code-execution` isolates `subprocess`, `shell`
@@ -19,7 +20,7 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: code
-        name: Code
+        name: Code mode
         description: Coding in an isolated Docker + gVisor workspace with its own branch
         order: 2
         plugins:

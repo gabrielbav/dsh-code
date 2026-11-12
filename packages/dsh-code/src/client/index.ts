@@ -1,21 +1,20 @@
 /**
- * Code plugin, browser half. Adds the Chat | Code switch to the sidebar
- * (`sidebar.mode`), filters the session list by mode through
- * `uiWorkspace.registerSessionFilter`, shows repository and branch pickers on
- * a blank session in Code mode, a workspace status line above the composer,
- * and Diff / Create PR / Restart / Delete actions in a Code session header.
- *
- * `sidebar.mode` and `registerSessionFilter` come from the DeepSeek Harness
- * extension points added in gabrielbav/deepseek-harness. On a Harness
- * without them, the switch and the filter are absent and Code sessions are
- * started from the preset selector instead; everything else works.
+ * Code plugin, browser half. A session becomes a Code session when "Code
+ * mode" is chosen in the Harness mode selector: a session that chose it
+ * outside the Code Workspace is replaced by a blank Code session there, so
+ * Code sessions group under one sidebar Workspace. A Code session shows
+ * repository and branch pickers above the composer, Repository and Branch
+ * rows in the composer's + menu, a workspace status line, and Diff /
+ * Create PR / Restart / Delete actions in its header. Everything uses
+ * documented Harness extension points; the Harness needs no changes.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
 import type { CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult } from '../types.ts'
-import { ModeSwitch, RepositoryPickers, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
-import { cell, readMode, sameIds, writeMode, type Cell, type CodeMode } from './store.ts'
+import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { RepositoryPickers, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
 /** Preset id the bundle patch declares for Code sessions. */
@@ -28,6 +27,8 @@ type Result<V> = { readonly ok: true; readonly value: V } | { readonly ok: false
 interface CodeRemote {
   setupStatus(refresh: boolean): Promise<Result<SelfTestReport>>
   homeWorkspace(): Promise<Result<string>>
+  presetSessions(): Promise<Result<string[]>>
+  inHomeWorkspace(sessionId: string): Promise<Result<boolean>>
   repositories(query: string | null): Promise<Result<RepositorySummary[]>>
   branches(repository: string): Promise<Result<BranchList>>
   select(sessionId: string, repository: string, baseBranch: string | null): Promise<Result<CodeSessionView>>
@@ -40,17 +41,26 @@ interface CodeRemote {
   deleteWorkspace(sessionId: string): Promise<Result<void>>
 }
 
-/** Sidebar filter registration offered by the fork's ui-workspace. */
-interface SessionListFilter {
-  readonly id: string
-  session(summary: { readonly id: string; readonly blank: boolean }): boolean
-  workspace?(workspace: { readonly workspaceId: string; readonly sessionIds: readonly string[] }): boolean
-  subscribe(listener: () => void): () => void
-}
-
 interface UiWorkspaceFace {
   startSession(workspaceId?: string, options?: { readonly agentPreset?: string }): void
-  registerSessionFilter?(filter: SessionListFilter): () => void
+}
+
+/** The parts of `ctx.commandUi` (ui-commands) this plugin uses: rows of the composer's + and / menu. */
+interface CommandOption { readonly id: string; readonly label: string; readonly detail?: string; readonly active?: boolean }
+interface CommandUiFace {
+  register(contribution: {
+    readonly name: string
+    label(): string
+    description(): string
+    readonly icon: unknown
+    available(session: { readonly sessionId: string }): boolean
+    readonly ui: {
+      readonly kind: 'popupSelect'
+      searchLabels(): { readonly placeholder: string; readonly empty: string; readonly noResults: string }
+      options(session: { readonly sessionId: string }, signal: AbortSignal): Promise<readonly CommandOption[]>
+      onSelect(option: CommandOption, session: { readonly sessionId: string }): Promise<void>
+    }
+  }): () => void
 }
 
 /** The parts of the Client context this plugin uses. */
@@ -59,7 +69,10 @@ interface ClientFace {
     inject(name: string, factory: () => () => void): void
     register(options: { readonly name: string; readonly id: string; readonly order?: number; readonly locale?: string; readonly inject?: (sessionId: string) => object }, component: ComponentType<never>): () => void
   }
-  readonly locale: { register(ns: string, dicts: Record<string, Record<string, string>>): () => void }
+  readonly locale: {
+    register(ns: string, dicts: Record<string, Record<string, string>>): () => void
+    bind(ns: string): (key: string, params?: Record<string, string>) => string
+  }
   readonly remote: {
     $mount(contribution: unknown): Promise<() => Promise<void> | void>
     readonly codeWorkspaces: CodeRemote
@@ -90,8 +103,12 @@ function register(ctx: Context): void {
   const face = ctx as unknown as ClientFace & Context
   const api = (): CodeRemote => face.remote.codeWorkspaces
 
-  const mode = cell<CodeMode>(readMode())
+  const t = face.locale.bind(NS)
+  /** Sessions with a repository selected or a provisioned workspace. */
   const codeIds = cell<ReadonlySet<string>>(new Set(), sameIds)
+  /** Sessions that chose Code mode in the mode selector. */
+  const presetIds = cell<ReadonlySet<string>>(new Set(), sameIds)
+  const isCode = (sessionId: string): boolean => presetIds.getSnapshot().has(sessionId) || codeIds.getSnapshot().has(sessionId)
   const views = new Map<string, Cell<CodeSessionView | null>>()
   const viewOf = (sessionId: string): Cell<CodeSessionView | null> => {
     let entry = views.get(sessionId)
@@ -106,6 +123,8 @@ function register(ctx: Context): void {
     const result = await api().sessions().catch(() => undefined)
     if (result === undefined || !result.ok) return
     codeIds.set(new Set(result.value.map(v => v.sessionId)))
+    const presets = await api().presetSessions().catch(() => undefined)
+    if (presets !== undefined && presets.ok) presetIds.set(new Set([...presetIds.getSnapshot(), ...presets.value]))
     const seen = new Set<string>()
     for (const v of result.value) {
       viewOf(v.sessionId).set(v)
@@ -129,70 +148,102 @@ function register(ctx: Context): void {
     home.set(result.value)
     return result.value
   }
-  const choose = (next: CodeMode): void => {
-    if (next === mode.getSnapshot()) return
-    writeMode(next)
-    mode.set(next)
-    if (next === 'chat') {
-      uiWorkspace()?.startSession(undefined, {})
+  // Choosing Code mode on a session outside the Code Workspace starts a blank Code session there instead:
+  // Workspace membership is fixed at creation. The new session's own selection finds it already home.
+  const presetEvents = ctx as unknown as { on(name: 'agent-preset/selected', listener: (sessionId: string, agentPreset: string) => void): () => void }
+  ctx.effect(() => presetEvents.on('agent-preset/selected', (rawId, agentPreset) => {
+    const sessionId = String(rawId)
+    const next = new Set(presetIds.getSnapshot())
+    if (agentPreset !== PRESET_ID) {
+      next.delete(sessionId)
+      presetIds.set(next)
       return
     }
-    void ensureHome().then((workspaceId) => { uiWorkspace()?.startSession(workspaceId, { agentPreset: PRESET_ID }) })
+    presetIds.set(next.add(sessionId))
+    void api().inHomeWorkspace(sessionId).then(async (home) => {
+      if (!home.ok || home.value) return
+      const workspaceId = await ensureHome()
+      if (workspaceId !== undefined) uiWorkspace()?.startSession(workspaceId, { agentPreset: PRESET_ID })
+    }).catch(() => undefined)
+  }), 'dsh-code: Code mode moves into the Code Workspace')
+
+  const selectFor = async (sessionId: string, repository: string, branch: string | null): Promise<Outcome<CodeSessionView>> => {
+    const result = outcome(await api().select(sessionId, repository, branch))
+    if (result.ok) {
+      viewOf(sessionId).set(result.value)
+      codeIds.set(new Set([...codeIds.getSnapshot(), sessionId]))
+    }
+    return result
   }
-  if (mode.getSnapshot() === 'code') void ensureHome()
+  const editable = (sessionId: string): boolean => {
+    const view = viewOf(sessionId).getSnapshot()
+    return isCode(sessionId) && (view === null || view.status === 'pending')
+  }
+  const fail = (result: Outcome<unknown>): never => { throw new Error(result.ok ? '' : result.message) }
 
-  ctx.inject(['uiWorkspace'], (scoped) => scoped.effect(() => {
-    const ws = scoped.get('uiWorkspace' as never) as UiWorkspaceFace | undefined
-    if (ws?.registerSessionFilter === undefined) return () => {}
-    const subscribers = new Set<() => void>()
-    const notify = (): void => { for (const listener of [...subscribers]) listener() }
-    const offMode = mode.subscribe(notify)
-    const offIds = codeIds.subscribe(notify)
-    const offHome = home.subscribe(notify)
-    const dispose = ws.registerSessionFilter({
-      id: 'dsh-code.mode',
-      session: (summary) => {
-        if (summary.blank) return true
-        const isCode = codeIds.getSnapshot().has(String(summary.id))
-        return mode.getSnapshot() === 'code' ? isCode : !isCode
+  // Repository and Branch in the composer's + menu (also reachable as /repository and /branch).
+  ctx.inject(['commandUi'], (scope) => {
+    const commands = scope.get('commandUi' as never) as unknown as CommandUiFace
+    scope.effect(() => commands.register({
+      name: 'repository',
+      label: () => t('command.repository'),
+      description: () => t('command.repositoryDescription'),
+      icon: IconFolderOpenOutlineRegular,
+      available: session => editable(String(session.sessionId)),
+      ui: {
+        kind: 'popupSelect',
+        searchLabels: () => ({ placeholder: t('picker.search'), empty: t('command.noRepositories'), noResults: t('command.noMatch') }),
+        options: async (session) => {
+          const current = viewOf(String(session.sessionId)).getSnapshot()?.repository
+          const list = outcome(await api().repositories(null))
+          if (!list.ok) return fail(list)
+          return list.value.map(repo => ({ id: repo.fullName, label: repo.fullName, active: repo.fullName === current }))
+        },
+        onSelect: async (option, session) => {
+          const result = await selectFor(String(session.sessionId), option.id, null)
+          if (!result.ok) fail(result)
+        },
       },
-      workspace: (workspace) => {
-        const isHome = String(workspace.workspaceId) === home.getSnapshot()
-        if (mode.getSnapshot() === 'chat') return !isHome
-        const ids = codeIds.getSnapshot()
-        return isHome || workspace.sessionIds.some(id => ids.has(String(id)))
+    }), 'dsh-code: + menu repository')
+    scope.effect(() => commands.register({
+      name: 'branch',
+      label: () => t('command.branch'),
+      description: () => t('command.branchDescription'),
+      icon: IconBranchOutlineRegular,
+      available: session => editable(String(session.sessionId)) && viewOf(String(session.sessionId)).getSnapshot() !== null,
+      ui: {
+        kind: 'popupSelect',
+        searchLabels: () => ({ placeholder: t('command.searchBranches'), empty: t('command.noBranches'), noResults: t('command.noMatch') }),
+        options: async (session) => {
+          const view = viewOf(String(session.sessionId)).getSnapshot()
+          if (view === null) throw new Error(t('command.chooseRepositoryFirst'))
+          const list = outcome(await api().branches(view.repository))
+          if (!list.ok) return fail(list)
+          return list.value.branches.map(name => ({
+            id: name, label: name, active: name === view.baseBranch,
+            ...name === list.value.defaultBranch ? { detail: t('command.defaultBranch') } : {},
+          }))
+        },
+        onSelect: async (option, session) => {
+          const sessionId = String(session.sessionId)
+          const view = viewOf(sessionId).getSnapshot()
+          if (view === null) throw new Error(t('command.chooseRepositoryFirst'))
+          const result = await selectFor(sessionId, view.repository, option.id)
+          if (!result.ok) fail(result)
+        },
       },
-      subscribe: (listener) => {
-        subscribers.add(listener)
-        return () => { subscribers.delete(listener) }
-      },
-    })
-    return () => { dispose(); offMode(); offIds(); offHome() }
-  }, 'dsh-code: session list filter'))
-
-  face.slots.inject('sidebar.mode', () => face.slots.register({
-    name: 'sidebar.mode', id: 'dsh-code.mode', locale: NS,
-    inject: () => ({ hooks: { mode }, choose }),
-  }, ModeSwitch as ComponentType<never>))
+    }), 'dsh-code: + menu branch')
+  })
 
   face.slots.inject('conversation.hero.options', () => face.slots.register({
     name: 'conversation.hero.options', id: 'dsh-code.repository', order: 10, locale: NS,
     inject: (sessionId: string) => ({
-      hooks: { mode, view: viewOf(sessionId) },
+      hooks: { codeIds, presetIds, view: viewOf(sessionId) },
+      sessionId,
       setup: async (again: boolean) => outcome(await api().setupStatus(again)),
       repositories: async () => outcome(await api().repositories(null)),
       branches: async (repository: string) => outcome(await api().branches(repository)),
-      select: async (repository: string, branch: string | null) => {
-        const presets = ctx.get('remote.agentPresets' as never) as { select(sessionId: string, presetId: string): Promise<Result<string>> } | undefined
-        const preset = await presets?.select(sessionId, PRESET_ID)
-        if (preset !== undefined && !preset.ok) return { ok: false, message: preset.error.message } as const
-        const result = outcome(await api().select(sessionId, repository, branch))
-        if (result.ok) {
-          viewOf(sessionId).set(result.value)
-          codeIds.set(new Set([...codeIds.getSnapshot(), sessionId]))
-        }
-        return result
-      },
+      select: async (repository: string, branch: string | null) => selectFor(sessionId, repository, branch),
     }),
   }, RepositoryPickers as ComponentType<never>))
 

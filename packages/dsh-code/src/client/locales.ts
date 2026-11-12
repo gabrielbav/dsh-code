@@ -4,9 +4,17 @@
 export const NS = 'dsh-code'
 
 export const en = {
-  'mode.label': 'Mode',
-  'mode.chat': 'Chat',
-  'mode.code': 'Code',
+  'dialog.title': 'Code mode',
+  'command.repository': 'Repository',
+  'command.repositoryDescription': 'Choose the repository this Code session works on',
+  'command.branch': 'Branch',
+  'command.branchDescription': 'Choose the base branch of this Code session',
+  'command.searchBranches': 'Filter branches',
+  'command.noRepositories': 'No repositories found for your GitHub account',
+  'command.noBranches': 'This repository has no branches',
+  'command.noMatch': 'No matches',
+  'command.defaultBranch': 'default',
+  'command.chooseRepositoryFirst': 'Choose a repository first',
   'picker.repository': 'Repository',
   'picker.branch': 'Branch',
   'picker.loading': 'Loading…',
@@ -45,9 +53,17 @@ export const en = {
 export type CodeKey = keyof typeof en
 
 export const zh: Record<CodeKey, string> = {
-  'mode.label': '模式',
-  'mode.chat': '聊天',
-  'mode.code': '代码',
+  'dialog.title': '代码模式',
+  'command.repository': '仓库',
+  'command.repositoryDescription': '选择此代码会话使用的仓库',
+  'command.branch': '分支',
+  'command.branchDescription': '选择此代码会话的基础分支',
+  'command.searchBranches': '筛选分支',
+  'command.noRepositories': '你的 GitHub 账号下没有可用的仓库',
+  'command.noBranches': '此仓库没有分支',
+  'command.noMatch': '没有匹配项',
+  'command.defaultBranch': '默认',
+  'command.chooseRepositoryFirst': '请先选择仓库',
   'picker.repository': '仓库',
   'picker.branch': '分支',
   'picker.loading': '加载中…',

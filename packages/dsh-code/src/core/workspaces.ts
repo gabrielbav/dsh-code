@@ -5,7 +5,7 @@
  * restarts, and cleanup. One session owns exactly one workspace and one
  * container; the logical session id is never the container id.
  */
-import { chown, constants, mkdir, open, readFile, rm, writeFile, readdir } from 'node:fs/promises'
+import { chown, constants, cp, mkdir, open, readFile, rm, writeFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -89,6 +89,12 @@ export class WorkspaceManager {
 
   private get recordsDir(): string { return join(this.config.dataDir, 'records') }
   private get policyPath(): string { return join(this.config.dataDir, 'egress', 'policy.json') }
+  /**
+   * The proxy's code, copied into the data directory before each start. The Docker host may not see the
+   * plugin's install folder (on macOS, a Colima VM cannot read ~/Documents), but it must see dataDir for
+   * the workspaces anyway. The copy is outside `workspaces/`, so no sandbox can write to it.
+   */
+  private get proxySourceDir(): string { return join(this.config.dataDir, 'proxy') }
 
   /**
    * Run the mandatory checks. Code stays disabled unless every check passes.
@@ -151,6 +157,7 @@ export class WorkspaceManager {
   /** Ensure the internal network and the egress proxy are running with the current policy. */
   async ensureNetwork(): Promise<void> {
     await mkdir(join(this.config.dataDir, 'egress'), { recursive: true })
+    await cp(this.config.proxyDir, this.proxySourceDir, { recursive: true, force: true })
     await writeFile(this.policyPath, JSON.stringify(this.config.policy), { mode: 0o644 })
     await this.docker.ensureNetwork(INTERNAL_NETWORK, ['--internal', '--driver', 'bridge', '--label', `${OWNER_LABEL}=1`])
     await this.docker.ensureNetwork(EGRESS_NETWORK, ['--driver', 'bridge', '--label', `${OWNER_LABEL}=1`])
@@ -165,9 +172,9 @@ export class WorkspaceManager {
       '--label', `${OWNER_LABEL}=1`, '--user', '65534:65534', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
       '--read-only', '--pids-limit', '256', '--memory', '256m', '--restart', 'unless-stopped',
       '--network', EGRESS_NETWORK,
-      '--mount', `type=bind,source=${this.config.proxyDir},target=/opt/egress/src,readonly`,
+      '--mount', `type=bind,source=${this.proxySourceDir},target=/opt/egress/src,readonly`,
       '--mount', `type=bind,source=${this.config.dataDir}/egress,target=/opt/egress/policy,readonly`,
-      this.config.proxyImage, 'node', `/opt/egress/src/${existsSync(join(this.config.proxyDir, 'entry.js')) ? 'entry.js' : 'entry.ts'}`, '/opt/egress/policy/policy.json', String(PROXY_PORT),
+      this.config.proxyImage, 'node', `/opt/egress/src/${existsSync(join(this.proxySourceDir, 'entry.js')) ? 'entry.js' : 'entry.ts'}`, '/opt/egress/policy/policy.json', String(PROXY_PORT),
     ])
     await this.docker.exec(['network', 'connect', '--alias', PROXY_CONTAINER, INTERNAL_NETWORK, PROXY_CONTAINER])
     await this.docker.exec(['start', PROXY_CONTAINER])

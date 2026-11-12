@@ -4,10 +4,9 @@
  * plugin. Copy comes from the `dsh-code` locale namespace.
  */
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import { Button, Input, Modal, SegmentedControl } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BranchList, CodeSessionView, PendingWork, RepositorySummary, SelfTestReport } from '../types.ts'
-import type { CodeMode } from './store.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -22,40 +21,16 @@ const select: CSSProperties = {
 }
 const note: CSSProperties = { fontSize: 12, opacity: 0.75, padding: '4px 2px' }
 
-// ── Mode switch (sidebar.mode) ─────────────────────────────────────────────
-
-/** Injected face of the sidebar mode switch. */
-export interface ModeSwitchInjected {
-  readonly hooks: { readonly mode: HostObservable<CodeMode> }
-  readonly choose: (mode: CodeMode) => void
-}
-
-/**
- * Chat | Code switch at the top of the sidebar.
- * @param props - injected mode, owner width flag and translator.
- * @returns the switch.
- */
-export function ModeSwitch({ useMode, choose, wide, t }: InjectFace<ModeSwitchInjected> & PropsLocale<typeof NS> & { readonly wide?: boolean }): ReactNode {
-  const mode = useMode(value => value)
-  if (wide === false) return null
-  return (
-    <div style={{ padding: '4px 12px 8px' }}>
-      <SegmentedControl<CodeMode>
-        id="dsh-code-mode"
-        label={t('mode.label')}
-        value={mode}
-        onChange={choose}
-        options={[{ value: 'chat', label: t('mode.chat') }, { value: 'code', label: t('mode.code') }]}
-      />
-    </div>
-  )
-}
-
 // ── Repository and branch pickers (conversation.hero.options) ──────────────
 
 /** Injected face of the New Session pickers. */
 export interface PickersInjected {
-  readonly hooks: { readonly mode: HostObservable<CodeMode>; readonly view: HostObservable<CodeSessionView | null> }
+  readonly hooks: {
+    readonly codeIds: HostObservable<ReadonlySet<string>>
+    readonly presetIds: HostObservable<ReadonlySet<string>>
+    readonly view: HostObservable<CodeSessionView | null>
+  }
+  readonly sessionId: string
   readonly setup: (refresh: boolean) => Promise<Outcome<SelfTestReport>>
   readonly repositories: () => Promise<Outcome<RepositorySummary[]>>
   readonly branches: (repository: string) => Promise<Outcome<BranchList>>
@@ -63,12 +38,14 @@ export interface PickersInjected {
 }
 
 /**
- * Repository and base-branch dropdowns, shown only in Code mode.
+ * Repository and base-branch dropdowns, shown only on a Code mode session.
  * @param props - injected Remote calls, state and translator.
- * @returns the pickers, the setup report, or nothing in Chat mode.
+ * @returns the pickers, the setup report, or nothing on other sessions.
  */
-export function RepositoryPickers({ useMode, useView, setup, repositories, branches, select: choose, t }: InjectFace<PickersInjected> & PropsLocale<typeof NS>): ReactNode {
-  const mode = useMode(value => value)
+export function RepositoryPickers({ useCodeIds, usePresetIds, useView, sessionId, setup, repositories, branches, select: choose, t }: InjectFace<PickersInjected> & PropsLocale<typeof NS>): ReactNode {
+  const selected = useCodeIds(ids => ids.has(sessionId))
+  const preset = usePresetIds(ids => ids.has(sessionId))
+  const mode = selected || preset ? 'code' : 'chat'
   const view = useView(value => value)
   const [report, setReport] = useState<SelfTestReport | null>(null)
   const [repos, setRepos] = useState<RepositorySummary[] | null>(null)
@@ -78,6 +55,12 @@ export function RepositoryPickers({ useMode, useView, setup, repositories, branc
   const [typed, setTyped] = useState('')
   const [repository, setRepository] = useState<string>(view?.repository ?? '')
   const [branch, setBranch] = useState<string>(view?.baseBranch ?? '')
+  // A choice made from the composer's + menu updates the view; the dropdowns follow it.
+  useEffect(() => {
+    if (view === null) return
+    setRepository(view.repository)
+    setBranch(view.baseBranch)
+  }, [view?.repository, view?.baseBranch])
 
   useEffect(() => {
     if (mode !== 'code') return
@@ -284,7 +267,7 @@ export function SessionActions({ useView, diff, pendingWork, createPullRequest, 
           : t('delete.clean')}
         footer={<Button variant="primary" disabled={busy} onClick={() => { void run(remove, () => null) }}>{t('delete.confirm')}</Button>}
       />
-      <Modal open={dialog?.kind === 'message'} onClose={close} closeLabel={t('action.close')} title={t('mode.code')} description={dialog?.kind === 'message' ? dialog.text : ''} />
+      <Modal open={dialog?.kind === 'message'} onClose={close} closeLabel={t('action.close')} title={t('dialog.title')} description={dialog?.kind === 'message' ? dialog.text : ''} />
     </div>
   )
 }

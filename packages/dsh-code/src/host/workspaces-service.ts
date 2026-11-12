@@ -8,7 +8,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import z from '@deepseek-ai/schemastery'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -114,6 +114,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
   readonly manager: WorkspaceManager
   private readonly github = new GitHubProvider()
   private readonly selections = new Map<string, Selection>()
+  /** Sessions whose committed Agent preset is Code, from `agent-preset/selected`. */
+  private readonly codeModeSessions = new Set<string>()
   private selfTestReport: Promise<SelfTestReport> | undefined
 
   /**
@@ -135,6 +137,12 @@ export class CodeWorkspacesService extends TypertRemoteService {
       return () => { lifetime.abort() }
     }, 'dsh-code: reconcile workspaces')
     ctx.effect(() => ctx.on('agent/inbox/inserted', ({ agent }) => { this.hold(agent) }), 'dsh-code: hold first message until provisioned')
+    // The mode selector is how a session becomes a Code session; the agent-preset registry re-emits each committed choice.
+    const presetEvents = ctx as unknown as { on(name: 'agent-preset/selected', listener: (sessionId: string, agentPreset: string) => void): () => void }
+    ctx.effect(() => presetEvents.on('agent-preset/selected', (sessionId, agentPreset) => {
+      if (agentPreset === config.presetId) this.codeModeSessions.add(String(sessionId))
+      else this.codeModeSessions.delete(String(sessionId))
+    }), 'dsh-code: track Code mode sessions')
     ctx.effect(() => ctx.on('workspace/session-archived', ({ sessionId }) => {
       void this.manager.delete(sessionId).catch((error: unknown) => { ctx.logger('dsh-code').warn('cleanup of %s failed: %s', sessionId, String(error)) })
     }), 'dsh-code: delete workspace on archive')
@@ -188,6 +196,31 @@ export class CodeWorkspacesService extends TypertRemoteService {
     const path = join(this.config.dataDir, 'sessions')
     await mkdir(path, { recursive: true })
     return String((await registry.create(path, 'Code')).id)
+  }
+
+  /**
+   * Sessions that chose Code mode in the mode selector during this Host run.
+   * @returns session ids.
+   */
+  @Remote
+  async presetSessions(): Promise<string[]> {
+    return [...this.codeModeSessions]
+  }
+
+  /**
+   * Whether a session was created in the Code Workspace. Workspace membership
+   * is fixed when a session is created, so a session that chose Code mode
+   * elsewhere is replaced by a blank Code session there.
+   * @param sessionId - session id.
+   * @returns true when the session's recorded directory is the Code Workspace.
+   */
+  @Remote
+  async inHomeWorkspace(sessionId: string): Promise<boolean> {
+    const agents = this.ctx.get('agents') as { get(id: string): Agent | undefined } | undefined
+    const cwd = agents?.get(sessionId)?.session.header.cwd
+    if (cwd === undefined) return false
+    const canonical = async (path: string): Promise<string> => realpath(path).catch(() => path)
+    return await canonical(cwd) === await canonical(join(this.config.dataDir, 'sessions'))
   }
 
   /**
@@ -341,6 +374,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
   @Remote
   async deleteWorkspace(sessionId: string): Promise<void> {
     this.selections.delete(sessionId)
+    this.codeModeSessions.delete(sessionId)
     try {
       await this.manager.delete(sessionId)
     } catch (error) {
