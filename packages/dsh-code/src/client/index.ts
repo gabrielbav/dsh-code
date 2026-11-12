@@ -105,7 +105,10 @@ export async function apply(ctx: Context): Promise<void> {
 
 function register(ctx: Context): void {
   const face = ctx as unknown as ClientFace & Context
-  const api = (): CodeRemote => face.remote.codeWorkspaces
+  // Read the Remote once: a popup or timer can outlive this context, and reading ctx.remote
+  // on an inactive context throws ("cannot get required service remote").
+  const codeRemote = face.remote.codeWorkspaces
+  const api = (): CodeRemote => codeRemote
 
   const t = face.locale.bind(NS)
   /** Sessions with a repository selected or a provisioned workspace. */
@@ -142,7 +145,14 @@ function register(ctx: Context): void {
     return () => { clearInterval(timer) }
   }, 'dsh-code: session state')
 
-  const uiWorkspace = (): UiWorkspaceFace | undefined => ctx.get('uiWorkspace' as never) as UiWorkspaceFace | undefined
+  const uiWorkspace = (): UiWorkspaceFace | undefined => {
+    try {
+      return ctx.get('uiWorkspace' as never) as UiWorkspaceFace | undefined
+    } catch {
+      // The context was disposed (reconnect or reload); its replacement handles the next selection.
+      return undefined
+    }
+  }
   const home = cell<string | null>(null)
   const ensureHome = async (): Promise<string | undefined> => {
     const known = home.getSnapshot()
