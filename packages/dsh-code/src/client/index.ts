@@ -11,8 +11,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { AccountList, CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment } from '../types.ts'
-import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular, IconUserOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { AccountRepositories, CodeSessionView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment } from '../types.ts'
+import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { EnvironmentView, SessionActions, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
@@ -31,10 +31,9 @@ interface CodeRemote {
   inHomeWorkspace(sessionId: string): Promise<Result<boolean>>
   repositories(query: string | null, sessionId: string | null): Promise<Result<RepositorySummary[]>>
   branches(repository: string, sessionId: string | null): Promise<Result<BranchList>>
-  accounts(sessionId: string): Promise<Result<AccountList>>
-  chooseAccount(sessionId: string, login: string): Promise<Result<CodeSessionView | null>>
+  repositoriesByAccount(): Promise<Result<AccountRepositories[]>>
   environment(sessionId: string): Promise<Result<SessionEnvironment>>
-  select(sessionId: string, repository: string, baseBranch: string | null): Promise<Result<CodeSessionView>>
+  select(sessionId: string, repository: string, baseBranch: string | null, account: string | null): Promise<Result<CodeSessionView>>
   sessions(): Promise<Result<CodeSessionView[]>>
   diff(sessionId: string): Promise<Result<string>>
   pendingWork(sessionId: string): Promise<Result<PendingWork | null>>
@@ -49,7 +48,13 @@ interface UiWorkspaceFace {
 }
 
 /** The parts of `ctx.commandUi` (ui-commands) this plugin uses: rows of the composer's + and / menu. */
-interface CommandOption { readonly id: string; readonly label: string; readonly detail?: string; readonly active?: boolean }
+interface CommandOption {
+  readonly id: string
+  readonly label: string
+  readonly detail?: string
+  readonly active?: boolean
+  readonly group?: { readonly name: string; readonly label: string }
+}
 interface CommandUiFace {
   register(contribution: {
     readonly name: string
@@ -194,8 +199,8 @@ function register(ctx: Context): void {
     }).catch(() => undefined)
   }), 'dsh-code: Code mode moves into the Code Workspace')
 
-  const selectFor = async (sessionId: string, repository: string, branch: string | null): Promise<Outcome<CodeSessionView>> => {
-    const result = outcome(await api().select(sessionId, repository, branch))
+  const selectFor = async (sessionId: string, repository: string, branch: string | null, account: string | null = null): Promise<Outcome<CodeSessionView>> => {
+    const result = outcome(await api().select(sessionId, repository, branch, account))
     if (result.ok) {
       viewOf(sessionId).set(result.value)
       codeIds.set(new Set([...codeIds.getSnapshot(), sessionId]))
@@ -208,39 +213,10 @@ function register(ctx: Context): void {
   }
   const fail = (result: Outcome<unknown>): never => { throw new Error(result.ok ? '' : result.message) }
 
-  // Account, Repository and Branch in the composer's + menu (also reachable as /account, /repository and /branch).
+  // Repository and Branch in the composer's + menu (also reachable as /repository and /branch). Repository lists
+  // every signed-in gh account's repositories grouped by account; the group picked decides the account.
   ctx.inject(['commandUi'], (scope) => {
     const commands = scope.get('commandUi' as never) as unknown as CommandUiFace
-    scope.effect(() => commands.register({
-      name: 'account',
-      label: () => t('command.account'),
-      description: () => t('command.accountDescription'),
-      icon: IconUserOutlineRegular,
-      available: session => editable(String(session.sessionId)),
-      ui: {
-        kind: 'popupSelect',
-        searchLabels: () => ({ placeholder: t('command.searchAccounts'), empty: t('command.noAccounts'), noResults: t('command.noMatch') }),
-        options: async (session) => {
-          const list = outcome(await api().accounts(String(session.sessionId)))
-          if (!list.ok) return fail(list)
-          // `active` only parks the keyboard highlight, so the account in use is also named in the row.
-          // The gh CLI's own default account is not shown: Code sessions never use it implicitly.
-          return list.value.accounts.map((account) => {
-            const inUse = account.login === list.value.current
-            return { id: account.login, label: account.login, active: inUse, ...inUse ? { detail: t('command.inUse') } : {} }
-          })
-        },
-        onSelect: async (option, session) => {
-          const sessionId = String(session.sessionId)
-          const result = outcome(await api().chooseAccount(sessionId, option.id))
-          if (!result.ok) fail(result)
-          else {
-            viewOf(sessionId).set(result.value)
-            if (result.value === null) codeIds.set(new Set([...codeIds.getSnapshot()].filter(id => id !== sessionId)))
-          }
-        },
-      },
-    }), 'dsh-code: + menu account')
     scope.effect(() => commands.register({
       name: 'repository',
       label: () => t('command.repository'),
@@ -251,13 +227,22 @@ function register(ctx: Context): void {
         kind: 'popupSelect',
         searchLabels: () => ({ placeholder: t('picker.search'), empty: t('command.noRepositories'), noResults: t('command.noMatch') }),
         options: async (session) => {
-          const current = viewOf(String(session.sessionId)).getSnapshot()?.repository
-          const list = outcome(await api().repositories(null, String(session.sessionId)))
+          const view = viewOf(String(session.sessionId)).getSnapshot()
+          const list = outcome(await api().repositoriesByAccount())
           if (!list.ok) return fail(list)
-          return list.value.map(repo => ({ id: repo.fullName, label: repo.fullName, active: repo.fullName === current, ...repo.fullName === current ? { detail: t('command.inUse') } : {} }))
+          return list.value.flatMap(({ login, repositories, error }) => {
+            const group = { name: login, label: login }
+            if (error !== undefined) return [{ id: `${login}\n`, label: t('command.accountFailed', { error }), group }]
+            return repositories.map((repo) => {
+              const inUse = view !== null && view.account === login && view.repository === repo.fullName
+              return { id: `${login}\n${repo.fullName}`, label: repo.fullName, group, active: inUse, ...inUse ? { detail: t('command.inUse') } : {} }
+            })
+          })
         },
         onSelect: async (option, session) => {
-          const result = await selectFor(String(session.sessionId), option.id, null)
+          const [account, repository] = option.id.split('\n')
+          if (account === undefined || repository === undefined || repository === '') return
+          const result = await selectFor(String(session.sessionId), repository, null, account)
           if (!result.ok) fail(result)
         },
       },
@@ -287,7 +272,7 @@ function register(ctx: Context): void {
           const sessionId = String(session.sessionId)
           const view = viewOf(sessionId).getSnapshot()
           if (view === null) throw new Error(t('command.chooseRepositoryFirst'))
-          const result = await selectFor(sessionId, view.repository, option.id)
+          const result = await selectFor(sessionId, view.repository, option.id, view.account)
           if (!result.ok) fail(result)
         },
       },

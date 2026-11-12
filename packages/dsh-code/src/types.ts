@@ -63,17 +63,12 @@ export interface PushResult {
   readonly branch: string
 }
 
-/** One account the host's gh CLI is signed in with. */
-export interface AccountOption {
+/** Repositories one gh account can access, for the grouped Repository menu. */
+export interface AccountRepositories {
   readonly login: string
-  /** The gh CLI's active account. */
-  readonly active: boolean
-}
-
-/** Accounts a Code session can use, and the one it uses now. */
-export interface AccountList {
-  readonly accounts: readonly AccountOption[]
-  readonly current: string
+  readonly repositories: readonly RepositorySummary[]
+  /** Why this account's listing failed; its group is then empty. */
+  readonly error?: string
 }
 
 /** What the Environment tab shows about where a session runs. */
