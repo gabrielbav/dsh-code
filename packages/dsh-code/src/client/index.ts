@@ -224,10 +224,10 @@ function register(ctx: Context): void {
           const list = outcome(await api().accounts(String(session.sessionId)))
           if (!list.ok) return fail(list)
           // `active` only parks the keyboard highlight, so the account in use is also named in the row.
+          // The gh CLI's own default account is not shown: Code sessions never use it implicitly.
           return list.value.accounts.map((account) => {
             const inUse = account.login === list.value.current
-            const notes = [...inUse ? [t('command.inUse')] : [], ...account.active ? [t('command.activeAccount')] : []]
-            return { id: account.login, label: account.login, active: inUse, ...notes.length > 0 ? { detail: notes.join(' · ') } : {} }
+            return { id: account.login, label: account.login, active: inUse, ...inUse ? { detail: t('command.inUse') } : {} }
           })
         },
         onSelect: async (option, session) => {
