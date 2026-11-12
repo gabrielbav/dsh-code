@@ -37,7 +37,7 @@ export interface StatusInjected {
 export function WorkspaceStatusLine({ useView, usePresetIds, sessionId, t }: InjectFace<StatusInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(value => value)
   const codeMode = usePresetIds(ids => ids.has(sessionId))
-  if (view === null) return codeMode ? <div style={note} role="status" aria-live="polite">{t('status.choose')}</div> : null
+  if (view === null) return null
   if (view.status === 'pending' && !codeMode) return null
   const text = statusText(view, t)
   if (text === undefined) return null
