@@ -9,7 +9,11 @@ import { WorkspaceTypertGenerator, writeWorkspaceArtifacts } from '@deepseek-ai/
 const root = new URL('..', import.meta.url).pathname
 const run = (bin: string, args: string[], cwd = root): void => { execFileSync(bin, args, { cwd, stdio: 'inherit' }) }
 
-run(`${root}node_modules/.bin/tsc`, ['-b', 'tsconfig.host.json', 'tsconfig.client.json'])
+// The client imports @gabrielbav/dsh-code/remote (lib/typert.remote-client.*), which only the host
+// face generates. Emit the host face first so a clean checkout can compile and analyze the client.
+run(`${root}node_modules/.bin/tsc`, ['-b', 'tsconfig.host.json'])
+writeWorkspaceArtifacts(root, new WorkspaceTypertGenerator(root).generateContributors(['host']))
+run(`${root}node_modules/.bin/tsc`, ['-b', 'tsconfig.client.json'])
 writeWorkspaceArtifacts(root, new WorkspaceTypertGenerator(root).generateContributors())
 run(`${root}packages/dsh-code/node_modules/.bin/tsdown`, ['-c', 'tsdown.client.ts'], `${root}packages/dsh-code`)
 console.log('dsh-code: build complete')

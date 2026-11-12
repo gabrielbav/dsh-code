@@ -71,6 +71,9 @@
       ]
     }
   },
+  "dependencies": {
+    "zod": "4.6.6"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.1.0",
     "@deepseek-ai/dsh-fs": ">=0.2.2-rc.1 <0.3.0",

@@ -1,9 +1,17 @@
 packages:
   - packages/*
 
-onlyBuiltDependencies:
-  - node-pty
-  - esbuild
+# pnpm 11 reads allowBuilds (onlyBuiltDependencies is ignored). Same choices as the harness.
+allowBuilds:
+  esbuild: true
+  node-pty: true
+  koffi: true
+  # restores the executable bit on node-pty's macOS spawn helper
+  '@deepseek-ai/dsh-subprocess-local': true
 
 patchedDependencies:
   '@deepseek-ai/dsh-typert-generator@0.2.2-rc.1': patches/@deepseek-ai__dsh-typert-generator@0.2.2-rc.1.patch
+
+# rolldown-plugin-dts 0.30.2 is younger than pnpm's minimumReleaseAge; drop this once it ages in.
+overrides:
+  rolldown-plugin-dts: 0.30.1
