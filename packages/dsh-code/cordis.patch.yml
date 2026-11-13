@@ -89,16 +89,8 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
-          - id: subagent
-            name: '@deepseek-ai/dsh-subagent'
-          - id: subagent-spawn-in-process
-            name: '@deepseek-ai/dsh-subagent-spawn-in-process'
-            config:
-              providerName: spawn
-          - id: subagent-fork-in-process
-            name: '@deepseek-ai/dsh-subagent-fork-in-process'
-            config:
-              providerName: fork
+          # The subagent runtime and its spawn/fork providers are Host-wide rows of the base bundle;
+          # registering them again here breaks the preset ("subagents" is already registered).
           - id: tool-subagent-control
             name: '@deepseek-ai/dsh-tool-subagent-control'
             config:
