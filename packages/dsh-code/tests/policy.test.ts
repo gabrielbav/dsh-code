@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_ALLOW, decideAddress, decideRequest, isBlockedAddress, matchesPattern, type EgressPolicy } from '../src/egress/policy.ts'
+import { DEFAULT_ALLOW, decideAddress, decideRequest, isBlockedAddress, matchesPattern, policyForClient, type EgressPolicy } from '../src/egress/policy.ts'
 
 const policy: EgressPolicy = { mode: 'allowlist', allow: DEFAULT_ALLOW, privateAllow: [], ports: [80, 443] }
 
@@ -44,5 +44,15 @@ describe('egress policy', () => {
   it('admits explicitly approved private destinations', () => {
     const approved = { ...policy, privateAllow: ['10.0.0.5:5432'] }
     expect(decideRequest(approved, '10.0.0.5', 5432).allowed).toBe(true)
+  })
+
+  it('adds a session grant only for the client address it is keyed by', () => {
+    const shared = { ...policy, clients: { '10.1.0.5': ['granted.example'] } }
+    expect(decideRequest(policyForClient(shared, '10.1.0.5'), 'granted.example', 443).allowed).toBe(true)
+    expect(decideRequest(policyForClient(shared, '::ffff:10.1.0.5'), 'granted.example', 443).allowed).toBe(true)
+    expect(decideRequest(policyForClient(shared, '10.1.0.6'), 'granted.example', 443).allowed).toBe(false)
+    expect(decideRequest(policyForClient(shared, undefined), 'granted.example', 443).allowed).toBe(false)
+    // A grant never opens the network when it is off.
+    expect(decideRequest(policyForClient({ ...shared, mode: 'none' }, '10.1.0.5'), 'granted.example', 443).allowed).toBe(false)
   })
 })

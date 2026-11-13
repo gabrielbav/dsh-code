@@ -39,6 +39,8 @@ interface CodeRemote {
   setSessionOverrides(sessionId: string, overrides: SessionOverrides): Promise<Result<SessionOverridesView>>
   sessionVariables(sessionId: string): Promise<Result<SessionVariables>>
   setSessionVariables(sessionId: string, lines: string[]): Promise<Result<SessionVariables>>
+  networkGrants(sessionId: string): Promise<Result<string[]>>
+  revokeNetworkGrant(sessionId: string, host: string): Promise<Result<string[]>>
   environment(sessionId: string): Promise<Result<SessionEnvironment>>
   select(sessionId: string, repository: string, baseBranch: string | null, account: string | null): Promise<Result<CodeSessionView>>
   sessions(): Promise<Result<CodeSessionView[]>>
@@ -290,6 +292,8 @@ function register(ctx: Context): void {
         usage: async () => outcome(await api().usage(sessionId)),
         variables: async () => outcome(await api().sessionVariables(sessionId)),
         saveVariables: async (lines: string[]) => outcome(await api().setSessionVariables(sessionId, lines)),
+        grants: async () => outcome(await api().networkGrants(sessionId)),
+        revokeGrant: async (host: string) => outcome(await api().revokeNetworkGrant(sessionId, host)),
         overrides: async () => outcome(await api().sessionOverrides(sessionId)),
         saveOverrides: async (overrides: SessionOverrides) => outcome(await api().setSessionOverrides(sessionId, overrides)),
       }

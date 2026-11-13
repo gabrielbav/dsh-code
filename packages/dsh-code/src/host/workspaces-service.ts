@@ -822,6 +822,32 @@ export class CodeWorkspacesService extends TypertRemoteService {
   }
 
   /**
+   * Hosts the user approved for this session through request_network_access.
+   * @param sessionId - session id.
+   * @returns host names in approval order.
+   */
+  @Remote
+  async networkGrants(sessionId: string): Promise<string[]> {
+    return [...this.manager.networkGrants(sessionId)]
+  }
+
+  /**
+   * Take back one approved host; open tunnels to it close when the proxy reloads its policy.
+   * @param sessionId - session id.
+   * @param host - an approved host name.
+   * @returns the remaining hosts.
+   */
+  @Remote
+  async revokeNetworkGrant(sessionId: string, host: string): Promise<string[]> {
+    try {
+      await this.manager.setNetworkGrants(sessionId, this.manager.networkGrants(sessionId).filter(h => h !== host))
+    } catch (error) {
+      throw remoteFailure(error)
+    }
+    return [...this.manager.networkGrants(sessionId)]
+  }
+
+  /**
    * Accounts the host's gh CLI is signed in with, for Settings > Code.
    * @returns logins in gh's order.
    */

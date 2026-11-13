@@ -603,6 +603,8 @@ export interface EnvironmentTabInjected {
   readonly usage: () => Promise<Outcome<WorkspaceUsage | null>>
   readonly variables: () => Promise<Outcome<SessionVariables>>
   readonly saveVariables: (lines: string[]) => Promise<Outcome<SessionVariables>>
+  readonly grants: () => Promise<Outcome<string[]>>
+  readonly revokeGrant: (host: string) => Promise<Outcome<string[]>>
   readonly overrides: () => Promise<Outcome<SessionOverridesView>>
   readonly saveOverrides: (overrides: SessionOverrides) => Promise<Outcome<SessionOverridesView>>
 }
@@ -729,13 +731,52 @@ function SessionVariablesEditor({ variables, save, t }: { readonly variables: ()
   )
 }
 
+/** Hosts the user approved for this session (request_network_access), each with a Remove button. */
+function NetworkGrantsList({ load, revoke, t }: { readonly load: () => Promise<Outcome<string[]>>; readonly revoke: (host: string) => Promise<Outcome<string[]>>; readonly t: T }): ReactNode {
+  const [hosts, setHosts] = useState<string[] | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void load().then((r) => {
+      if (!live) return
+      if (r.ok) setHosts(r.value)
+      else setMessage(t('error.generic', { error: r.message }))
+    })
+    return () => { live = false }
+  }, [load, t])
+  return (
+    <section style={{ display: 'grid', gap: 8 }}>
+      <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{t('env.approvedHosts')}</h3>
+      {hosts !== null && hosts.length === 0 && <div style={note}>{t('env.approvedHostsNone')}</div>}
+      {hosts !== null && hosts.map(host => (
+        <div key={host} style={row}>
+          <code style={value}>{host}</code>
+          <Button
+            size="sm"
+            onClick={() => {
+              setMessage(null)
+              void revoke(host).then((r) => {
+                if (r.ok) setHosts(r.value)
+                else setMessage(t('error.generic', { error: r.message }))
+              })
+            }}
+          >
+            {t('env.approvedHostsRemove')}
+          </Button>
+        </div>
+      ))}
+      {message !== null && <span style={note} role="status" aria-live="polite">{message}</span>}
+    </section>
+  )
+}
+
 /**
  * The Environment tab beside Chat and Trajectory: where the session runs and, for a Code session, its account,
  * repository, branches, container, network and limits, the provisioning timeline and live resource usage.
  * @param props - injected loaders, state and translator.
  * @returns the tab content.
  */
-export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, variables, saveVariables, overrides, saveOverrides, t }: InjectFace<EnvironmentTabInjected> & PropsLocale<typeof NS>): ReactNode {
+export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, variables, saveVariables, grants, revokeGrant, overrides, saveOverrides, t }: InjectFace<EnvironmentTabInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(v => v)
   const codeMode = usePresetIds(ids => ids.has(sessionId))
   const status = view?.status ?? (codeMode ? 'none' : 'host')
@@ -755,6 +796,7 @@ export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, 
         />
         {codeMode && <SessionOverridesEditor load={overrides} save={saveOverrides} t={t} />}
         {codeMode && <SessionVariablesEditor variables={variables} save={saveVariables} t={t} />}
+        {codeMode && <NetworkGrantsList load={grants} revoke={revokeGrant} t={t} />}
       </div>
     </div>
   )

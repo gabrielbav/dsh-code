@@ -156,6 +156,18 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     expect(messages.filter(m => m.type === 'url').map(m => m.url)).toEqual(['http://127.0.0.1:8000/'])
   }, 60_000)
 
+  it('applies a host approved for one session to that session only', async () => {
+    const before = await manager.runInside(a, ['sh', '-c', 'curl -s --max-time 10 http://example.org/'])
+    expect(before).toContain('[sandbox: network access to example.org denied by the Code egress policy]')
+    await manager.grantNetwork('session-a', 'example.org')
+    // Session a passes the policy (200 with internet; a network error without, never the proxy's 403).
+    expect(await manager.runInside(a, ['sh', '-c', 'curl -s -o /dev/null -w "%{http_code}" --max-time 15 http://example.org/ || true'])).not.toBe('403')
+    expect(await manager.runInside(b, ['sh', '-c', 'curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://example.org/'])).toBe('403')
+    await manager.setNetworkGrants('session-a', [])
+    await new Promise(r => setTimeout(r, 2500))
+    expect(await manager.runInside(a, ['sh', '-c', 'curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://example.org/'])).toBe('403')
+  }, 90_000)
+
   it('refuses a destination as soon as the policy no longer allows it', async () => {
     await manager.updatePolicy({ ...policy, privateAllow: [] })
     await new Promise(r => setTimeout(r, 2500))

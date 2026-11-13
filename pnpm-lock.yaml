@@ -81,6 +81,9 @@ importers:
       '@deepseek-ai/dsh-subprocess-local':
         specifier: 0.2.2-rc.1
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)(@deepseek-ai/dsh-subprocess@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)(@deepseek-ai/dsh-http-proxy@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)))(@deepseek-ai/dsh-timeout@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0))
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.2.2-rc.1
+        version: 0.2.2-rc.1(71e9b8099add9aaf7bb42662f07c41a3)
       '@deepseek-ai/dsh-typert-generator':
         specifier: 0.2.2-rc.1
         version: 0.2.2-rc.1(patch_hash=448646b575cdfa9f38b5b8382fa69fcacc96f64f99bc0017757036ded4369d03)(@deepseek-ai/cordis@4.1.0)

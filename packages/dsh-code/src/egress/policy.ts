@@ -19,6 +19,23 @@ export interface EgressPolicy {
   readonly privateAllow: readonly string[]
   /** Allowed destination ports. */
   readonly ports: readonly number[]
+  /**
+   * Extra host patterns per workspace, keyed by the container's address on the internal network: hosts the user
+   * approved for one Code session through the request_network_access tool. Other sessions never get them.
+   */
+  readonly clients?: Readonly<Record<string, readonly string[]>>
+}
+
+/**
+ * The policy one client (a workspace container) gets: the shared allowlist plus that session's approved hosts.
+ * @param policy - the shared policy.
+ * @param client - the client's address as the proxy sees it (IPv4-mapped IPv6 is accepted).
+ * @returns the policy to decide this client's requests.
+ */
+export function policyForClient(policy: EgressPolicy, client: string | undefined): EgressPolicy {
+  const address = client?.replace(/^::ffff:/i, '')
+  const extra = address === undefined ? undefined : policy.clients?.[address]
+  return extra === undefined || extra.length === 0 ? policy : { ...policy, allow: [...policy.allow, ...extra] }
 }
 
 /** Default approved destinations: source control and common package registries. */

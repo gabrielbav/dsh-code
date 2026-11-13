@@ -142,6 +142,8 @@ export class WorkspaceError extends Error {
 /** Default namespace; its owner label value stays `1` so earlier installs keep their containers. */
 export const DEFAULT_NAMESPACE = 'dsh-code'
 export const PROXY_PORT = 3128
+/** The proxy polls policy.json every second; waiting this long guarantees a reload. */
+export const POLICY_RELOAD_MS = 1500
 
 /** Owns workspace records and their Docker resources. */
 export class WorkspaceManager {
@@ -260,6 +262,17 @@ export class WorkspaceManager {
         // A damaged variables file is ignored; the session starts with the defaults only.
       }
     }
+    // Hosts approved per session through request_network_access.
+    await mkdir(join(this.config.dataDir, 'network'), { recursive: true, mode: 0o700 })
+    for (const file of await readdir(join(this.config.dataDir, 'network'))) {
+      if (!file.endsWith('.json')) continue
+      try {
+        const hosts = JSON.parse(await readFile(join(this.config.dataDir, 'network', file), 'utf8')) as unknown
+        if (Array.isArray(hosts)) this.grants.set(file.slice(0, -5), hosts.filter((h): h is string => typeof h === 'string'))
+      } catch {
+        // A damaged grants file is ignored; the session follows the shared allowlist.
+      }
+    }
     for (const file of await readdir(this.recordsDir)) {
       if (!file.endsWith('.json')) continue
       const record = JSON.parse(await readFile(join(this.recordsDir, file), 'utf8')) as WorkspaceRecord
@@ -286,8 +299,11 @@ export class WorkspaceManager {
       if (info === undefined || !info.running || info.runtime !== REQUIRED_RUNTIME) {
         await this.setStatus(record, 'offline')
         offline.push(record.sessionId)
+      } else {
+        await this.learnAddress(record)
       }
     }
+    await this.writePolicy()
     return { orphansRemoved, offline }
   }
 
@@ -295,7 +311,7 @@ export class WorkspaceManager {
   async ensureNetwork(): Promise<void> {
     await mkdir(join(this.config.dataDir, 'egress'), { recursive: true })
     await cp(this.config.proxyDir, this.proxySourceDir, { recursive: true, force: true })
-    await writeFile(this.policyPath, JSON.stringify(this.config.policy), { mode: 0o644 })
+    await writeFile(this.policyPath, JSON.stringify(this.composedPolicy()), { mode: 0o644 })
     await this.docker.ensureNetwork(this.internalNetwork, ['--internal', '--driver', 'bridge', '--label', `${OWNER_LABEL}=${this.owner}`])
     await this.docker.ensureNetwork(this.egressNetwork, ['--driver', 'bridge', '--label', `${OWNER_LABEL}=${this.owner}`])
     const info = await this.docker.inspect(this.proxyContainer)
@@ -329,8 +345,87 @@ export class WorkspaceManager {
    */
   async updatePolicy(policy: EgressPolicy): Promise<void> {
     this.config.policy = policy
+    await this.writePolicy()
+  }
+
+  /** Hosts approved per session (request_network_access), persisted under dataDir/network. */
+  private readonly grants = new Map<string, readonly string[]>()
+  /** Internal-network address of each running workspace that has grants; the proxy keys grants by it. */
+  private readonly addresses = new Map<string, string>()
+  private grantsPath(sessionId: string): string { return join(this.config.dataDir, 'network', `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`) }
+
+  /** @returns the shared policy plus each running session's approved hosts, keyed by its container address. */
+  private composedPolicy(): EgressPolicy {
+    const clients: Record<string, readonly string[]> = {}
+    for (const [sessionId, address] of this.addresses) {
+      const hosts = this.grants.get(sessionId)
+      if (hosts !== undefined && hosts.length > 0) clients[address] = hosts
+    }
+    const { clients: _ignored, ...shared } = this.config.policy
+    return Object.keys(clients).length === 0 ? shared : { ...shared, clients }
+  }
+
+  private async writePolicy(): Promise<void> {
     await mkdir(join(this.config.dataDir, 'egress'), { recursive: true })
-    await writeFile(this.policyPath, JSON.stringify(policy), { mode: 0o644 })
+    await writeFile(this.policyPath, JSON.stringify(this.composedPolicy()), { mode: 0o644 })
+  }
+
+  /**
+   * Record a running workspace's internal address; an address another session held before is taken from it.
+   * @returns whether the composed policy changed.
+   */
+  private async learnAddress(record: WorkspaceRecord): Promise<boolean> {
+    const before = JSON.stringify(this.composedPolicy())
+    this.addresses.delete(record.sessionId)
+    const result = await this.docker.tryExec(['inspect', '--format', `{{(index .NetworkSettings.Networks "${this.internalNetwork}").IPAddress}}`, record.containerName])
+    const address = result.stdout.trim()
+    if (result.code === 0 && /^\d+\.\d+\.\d+\.\d+$/.test(address)) {
+      for (const [other, known] of this.addresses) if (known === address) this.addresses.delete(other)
+      this.addresses.set(record.sessionId, address)
+    }
+    return JSON.stringify(this.composedPolicy()) !== before
+  }
+
+  /**
+   * Hosts the user approved for one session.
+   * @param sessionId - logical session id.
+   * @returns host patterns, in approval order.
+   */
+  networkGrants(sessionId: string): readonly string[] {
+    return this.grants.get(sessionId) ?? []
+  }
+
+  /**
+   * Allow one more host for a session's workspace only; the proxy applies it within about a second.
+   * @param sessionId - logical session id.
+   * @param host - normalized host name or `*.suffix` pattern.
+   */
+  async grantNetwork(sessionId: string, host: string): Promise<void> {
+    const hosts = [...new Set([...this.networkGrants(sessionId), host])]
+    await mkdir(join(this.config.dataDir, 'network'), { recursive: true, mode: 0o700 })
+    await writeFile(this.grantsPath(sessionId), JSON.stringify(hosts), { mode: 0o600 })
+    this.grants.set(sessionId, hosts)
+    const record = this.records.get(sessionId)
+    if (record !== undefined && !this.addresses.has(sessionId)) await this.learnAddress(record)
+    await this.writePolicy()
+    await new Promise(resolve => setTimeout(resolve, POLICY_RELOAD_MS))
+  }
+
+  /**
+   * Replace a session's approved hosts (the Environment tab removes them here).
+   * @param sessionId - logical session id.
+   * @param hosts - normalized host patterns.
+   */
+  async setNetworkGrants(sessionId: string, hosts: readonly string[]): Promise<void> {
+    if (hosts.length === 0) {
+      this.grants.delete(sessionId)
+      await rm(this.grantsPath(sessionId), { force: true })
+    } else {
+      await mkdir(join(this.config.dataDir, 'network'), { recursive: true, mode: 0o700 })
+      await writeFile(this.grantsPath(sessionId), JSON.stringify([...hosts]), { mode: 0o600 })
+      this.grants.set(sessionId, [...hosts])
+    }
+    await this.writePolicy()
   }
 
   /**
@@ -592,6 +687,8 @@ export class WorkspaceManager {
     }
     try {
       onProgress('starting-container')
+      // The old container's address may go to another workspace; its grants must not follow it.
+      if (this.addresses.delete(sessionId)) await this.writePolicy()
       await this.docker.removeContainer(record.containerName)
       const proxyAddress = await this.proxyAddress()
       const options = await this.optionsFor(record.repository, onProgress, sessionId)
@@ -611,6 +708,12 @@ export class WorkspaceManager {
       const info = await this.docker.inspect(record.containerName)
       if (info?.runtime !== REQUIRED_RUNTIME) throw new WorkspaceError('unsafe-state', 'container is not running under runsc')
       await this.docker.exec(['exec', record.containerName, 'true'])
+      // Every workspace's address is tracked, so a new container that reuses a stopped one's address never inherits
+      // its grants. When the policy file changed, wait for the proxy's one-second reload before the first command.
+      if (await this.learnAddress(record)) {
+        await this.writePolicy()
+        await new Promise(resolve => setTimeout(resolve, POLICY_RELOAD_MS))
+      }
       await this.setStatus(record, 'ready')
       return record
     } catch (error) {
@@ -718,6 +821,9 @@ export class WorkspaceManager {
     await rm(this.envPath(sessionId), { force: true })
     this.overrides.delete(sessionId)
     await rm(this.overridesPath(sessionId), { force: true })
+    this.grants.delete(sessionId)
+    await rm(this.grantsPath(sessionId), { force: true })
+    if (this.addresses.delete(sessionId)) await this.writePolicy()
     const record = this.records.get(sessionId)
     if (record === undefined) return
     await this.setStatus(record, 'deleting')
@@ -749,6 +855,7 @@ export class WorkspaceManager {
       if (info === undefined || !info.running) {
         await this.setStatus(record, 'offline')
         offline.push(record.sessionId)
+        if (this.addresses.delete(record.sessionId)) await this.writePolicy()
       }
     }
     return offline

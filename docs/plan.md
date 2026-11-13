@@ -23,6 +23,9 @@ Status of [spec.md](spec.md) as implemented in this repository, and the open wor
 | Code mode read from the Harness on every check (`agentPresets.composedPreset` / `presetForSession`), so it survives restarts | `CodeWorkspacesService.isCodeMode` | real Web app run |
 | Preview tab through a docker exec relay (works on macOS/Windows), frame mode and isolated browser (Chromium in the sandbox, screencast), on/off in Settings and per session | `src/host/preview.ts`, `src/host/browser.ts`, `src/worker/browser-*` | live tests (relay, isolated browser) |
 | Cleanup of workspaces whose session was deleted outright (event + sweep) | `CodeWorkspacesService.collect` | real app (5 containers, 7 checkouts removed) |
+| Harness permission selector honored (read-only mounts the checkout read-only; full access stays in the sandbox) | `CodeWorkspacesService.harnessMode`, `sandbox/mode` listener | unit tests |
+| Per-session host approval: `request_network_access`, Harness approval card, grants keyed by container address, Approved hosts in the Environment tab | `src/host/network-tool.ts`, `policyForClient`, `WorkspaceManager.grantNetwork` | unit tests; live test (granted to one session, refused to the other, revoked) |
+| Offline detection and `[sandbox: ...]` messages | `WorkspaceManager.checkHealth`, `execArgv`, `fs-container.ts`, proxy 403 | live test |
 | Real exit codes (`setsid --wait`) | `src/host/subprocess-docker.ts` | live test |
 | First message held until provisioned; working directory moved into the checkout | `CodeWorkspacesService.hold` | real Web app run |
 | File operations run inside the container (closes the symlink race) | `src/host/fs-container.ts`, `src/host/fs-helper-client.ts`, `src/worker/*`, `tsdown.worker.ts` | unit tests; manual race run below; live race test written, not yet run |

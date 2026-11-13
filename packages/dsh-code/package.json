@@ -71,6 +71,10 @@
     "./prompt-fs": {
       "types": "./lib/types/host/fs-prompt.d.ts",
       "default": "./lib/host/fs-prompt.js"
+    },
+    "./network-tool": {
+      "types": "./lib/types/host/network-tool.d.ts",
+      "default": "./lib/host/network-tool.js"
     }
   },
   "files": [
@@ -113,6 +117,7 @@
     "@deepseek-ai/dsh-fs-local": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-subprocess": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-subprocess-local": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-typert-protocol": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/schemastery": "^3.19.0"
   },
@@ -133,6 +138,7 @@
     "@deepseek-ai/dsh-session": "0.2.2-rc.1",
     "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1",
     "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
     "@deepseek-ai/dsh-typert-generator": "0.2.2-rc.1",
     "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
     "@deepseek-ai/dsh-working-directory": "0.2.2-rc.1",

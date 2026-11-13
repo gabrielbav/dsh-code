@@ -14,7 +14,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect, type Socket } from 'node:net'
 import { lookup } from 'node:dns/promises'
 import { readFileSync, watchFile } from 'node:fs'
-import { decideAddress, decideRequest, type Decision, type EgressPolicy } from './policy.ts'
+import { decideAddress, decideRequest, policyForClient, type Decision, type EgressPolicy } from './policy.ts'
 
 /** Resolves a hostname to IPv4/IPv6 addresses. */
 export type Resolver = (host: string) => Promise<string[]>
@@ -43,7 +43,7 @@ export interface ProxyOptions {
 
 const defaultResolve: Resolver = async host => (await lookup(host, { all: true, verbatim: true })).map(r => r.address)
 
-interface Tunnel { readonly host: string; readonly port: number; readonly sockets: readonly Socket[] }
+interface Tunnel { readonly host: string; readonly port: number; readonly client: string | undefined; readonly sockets: readonly Socket[] }
 
 /** A running proxy and its controls. */
 export interface EgressProxy {
@@ -53,8 +53,8 @@ export interface EgressProxy {
   close(): Promise<void>
 }
 
-async function admit(options: ProxyOptions, host: string, port: number): Promise<{ decision: Decision; address?: string }> {
-  const policy = options.policy()
+async function admit(options: ProxyOptions, host: string, port: number, client: string | undefined): Promise<{ decision: Decision; address?: string }> {
+  const policy = policyForClient(options.policy(), client)
   const first = decideRequest(policy, host, port)
   if (!first.allowed) return { decision: first }
   let addresses: string[]
@@ -101,10 +101,10 @@ export function createEgressProxy(options: ProxyOptions): EgressProxy {
       return
     }
     const port = url.port === '' ? 80 : Number(url.port)
-    void admit(options, url.hostname, port).then(({ decision, address }) => {
+    void admit(options, url.hostname, port, req.socket.remoteAddress).then(({ decision, address }) => {
       log({ kind: 'http', host: url.hostname, port, allowed: decision.allowed, reason: decision.allowed ? undefined : decision.reason, address })
       if (!decision.allowed) {
-        res.writeHead(403, { 'content-type': 'text/plain' }).end(`blocked by Code network policy: ${decision.reason}\n`)
+        res.writeHead(403, { 'content-type': 'text/plain' }).end(`[sandbox: network access to ${url.hostname} denied by the Code egress policy] ${decision.reason}. The agent can ask the user with the request_network_access tool.\n`)
         return
       }
       const headers: Record<string, string | string[] | undefined> = { ...req.headers, host: url.host }
@@ -130,14 +130,14 @@ export function createEgressProxy(options: ProxyOptions): EgressProxy {
       client.end('HTTP/1.1 400 Bad Request\r\n\r\n')
       return
     }
-    void admit(options, target.host, target.port).then(({ decision, address }) => {
+    void admit(options, target.host, target.port, client.remoteAddress).then(({ decision, address }) => {
       log({ kind: 'connect', host: target.host, port: target.port, allowed: decision.allowed, reason: decision.allowed ? undefined : decision.reason, address })
       if (!decision.allowed || address === undefined) {
-        client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\nblocked by Code network policy: ${decision.allowed ? 'no address' : decision.reason}\n`)
+        client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n[sandbox: network access to ${target.host} denied by the Code egress policy] ${decision.allowed ? 'no address' : decision.reason}. The agent can ask the user with the request_network_access tool.\n`)
         return
       }
       const upstream = connect({ host: address, port: target.port })
-      const tunnel: Tunnel = { host: target.host, port: target.port, sockets: [client, upstream] }
+      const tunnel: Tunnel = { host: target.host, port: target.port, client: client.remoteAddress, sockets: [client, upstream] }
       tunnels.add(tunnel)
       const close = (): void => { tunnels.delete(tunnel); client.destroy(); upstream.destroy() }
       upstream.setTimeout(idle, close)
@@ -159,7 +159,7 @@ export function createEgressProxy(options: ProxyOptions): EgressProxy {
     reevaluate() {
       const policy = options.policy()
       for (const tunnel of tunnels) {
-        if (!decideRequest(policy, tunnel.host, tunnel.port).allowed) {
+        if (!decideRequest(policyForClient(policy, tunnel.client), tunnel.host, tunnel.port).allowed) {
           tunnels.delete(tunnel)
           for (const socket of tunnel.sockets) socket.destroy()
         }
