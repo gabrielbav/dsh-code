@@ -1,6 +1,6 @@
 {
   "name": "@gabrielbav/dsh-code",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Code mode for DeepSeek Harness: per-session Docker + gVisor workspaces with repository and branch selection",
   "keywords": [
     "deepseek-harness",

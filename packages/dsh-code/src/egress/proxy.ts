@@ -37,6 +37,8 @@ export interface ProxyOptions {
   readonly log?: (event: EgressEvent) => void
   /** Closes idle tunnels after this many milliseconds. */
   readonly idleTimeoutMs?: number
+  /** Concurrent client sockets across all workspaces; excess connections are refused before any work. */
+  readonly maxConnections?: number
 }
 
 const defaultResolve: Resolver = async host => (await lookup(host, { all: true, verbatim: true })).map(r => r.address)
@@ -117,6 +119,10 @@ export function createEgressProxy(options: ProxyOptions): EgressProxy {
     })
   })
 
+  // Admission before work: a sandbox opening sockets in a loop cannot exhaust the proxy. Generous on purpose,
+  // so parallel package installs in several workspaces still fit. Header size and deadline keep Node's defaults
+  // (16 KiB, 60 s); tunnels close after the idle timeout, never on an absolute deadline that would cut downloads.
+  server.maxConnections = options.maxConnections ?? 2048
   server.on('connect', (req: IncomingMessage, client: Socket, head: Buffer) => {
     const target = parseAuthority(req.url ?? '')
     client.on('error', () => { client.destroy() })

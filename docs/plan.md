@@ -43,6 +43,12 @@ The 0.2.0 session had Docker but no gVisor (`runsc` could not be installed there
 
 ## Open work
 
+### Next, from a review of akitaonrails/ai-jail (2026-11-13)
+
+Adopted in 0.2.1: `lchown` for symlinks in the cloned checkout (a repository symlink to a host file could otherwise hand that file to the sandbox user when Harness runs as root); a connection cap on the egress proxy; a startup report when the Code preset fails to load. Already in place: git inside the checkout runs only in the container, credential-looking variables are never forwarded, env is a key/value map (no duplicate-key leak), UI output is React-escaped, CGNAT/multicast/IPv4-mapped IPv6 are refused, DNS is resolved once and the checked address is dialed, tunnels close on idle (never on an absolute deadline).
+
+Still to do, in order: per-session repository-scoped GitHub tokens (GitHub App installation token for the selected repository, revoked when the session ends) instead of the account-wide `gh` token; placeholder credentials swapped in by the proxy for allow-listed registries (the credential gateway); a JSONL audit log of allowed and refused egress; treat repository files the Harness reads on the host (`CLAUDE.md`, `AGENTS.md`) as untrusted input; per-ecosystem cache directories owned by the sandbox; digest-pinned worker image.
+
 Ordered by priority. Each item lists the goal, the approach, and how to verify it.
 
 ### 1. Publish

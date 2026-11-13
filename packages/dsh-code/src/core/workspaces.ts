@@ -5,7 +5,7 @@
  * restarts, and cleanup. One session owns exactly one workspace and one
  * container; the logical session id is never the container id.
  */
-import { chown, constants, cp, mkdir, open, readFile, rm, writeFile, readdir } from 'node:fs/promises'
+import { chown, constants, cp, lchown, mkdir, open, readFile, rm, writeFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -595,6 +595,9 @@ async function chownTree(path: string, uid: number, gid: number): Promise<void> 
   if (process.getuid?.() !== 0) return
   await chown(path, uid, gid)
   for (const entry of await readdir(path, { withFileTypes: true, recursive: true })) {
-    await chown(join(entry.parentPath, entry.name), uid, gid).catch(() => undefined)
+    // A cloned repository can contain symlinks to host files; chown would follow them and hand
+    // those files to the sandbox user. lchown changes the link itself.
+    const target = join(entry.parentPath, entry.name)
+    await (entry.isSymbolicLink() ? lchown(target, uid, gid) : chown(target, uid, gid)).catch(() => undefined)
   }
 }

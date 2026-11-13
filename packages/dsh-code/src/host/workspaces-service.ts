@@ -188,6 +188,20 @@ export class CodeWorkspacesService extends TypertRemoteService {
       void this.manager.reconcile().catch((error: unknown) => { ctx.logger('dsh-code').warn('reconcile failed: %s', String(error)) })
       return () => { lifetime.abort() }
     }, 'dsh-code: reconcile workspaces')
+    // The Harness hides a preset that fails to load from the mode selector without telling anyone (a row that
+    // registers a Host-wide service again is enough). Say so loudly in the dsh output; never block startup.
+    ctx.inject(['agentPresets'], (scoped) => scoped.effect(() => {
+      const timer = setTimeout(() => {
+        const presets = scoped.get('agentPresets' as never) as { resolve(id: string): Promise<{ readonly broken?: string }> } | undefined
+        void presets?.resolve(config.presetId).then((preset) => {
+          if (preset.broken === undefined) return
+          const message = `dsh-code: the "${config.presetId}" preset failed to load, so Code mode is missing from the mode selector:\n${preset.broken}`
+          ctx.logger('dsh-code').warn(message)
+          console.error(message)
+        }).catch((error: unknown) => { ctx.logger('dsh-code').debug('preset check failed: %s', String(error)) })
+      }, 5000)
+      return () => { clearTimeout(timer) }
+    }, 'dsh-code: report a broken Code preset'))
     ctx.effect(() => ctx.on('agent/inbox/inserted', ({ agent }) => { this.hold(agent) }), 'dsh-code: hold first message until provisioned')
     // The mode selector is how a session becomes a Code session; the agent-preset registry re-emits each committed choice.
     const presetEvents = ctx as unknown as { on(name: 'agent-preset/selected', listener: (sessionId: string, agentPreset: string) => void): () => void }
