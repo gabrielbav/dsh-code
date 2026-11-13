@@ -1,12 +1,10 @@
 /**
  * Code plugin, browser half. A session becomes a Code session when "Code
- * mode" is chosen in the Harness mode selector: a session that chose it
- * outside the Code Workspace is replaced by a blank Code session there, so
- * Code sessions group under one sidebar Workspace. A Code session gets
- * Repository and Branch rows in the composer's + menu, a status line above
- * the composer naming the choice and the workspace state (or the failing
- * Docker + gVisor checks), Diff / Create PR / Resources / Preview / Restart /
- * Delete actions in its header, an Environment tab, and a Settings > Code
+ * mode" is chosen in the Harness mode selector, in whatever Workspace the user
+ * picked; from the first message it works in its own checkout. A Code session
+ * gets Repository and Branch rows in the composer's + menu, the choice beside
+ * the + button, setup and workspace status above the composer, Preview and
+ * Delete session in its header, an Environment tab, and a Settings > Code
  * page. Everything uses documented Harness extension points; the Harness
  * needs no changes.
  */
@@ -28,9 +26,7 @@ type Result<V> = { readonly ok: true; readonly value: V } | { readonly ok: false
 /** The Remote namespace generated from the Host service. */
 interface CodeRemote {
   setupStatus(refresh: boolean): Promise<Result<SelfTestReport>>
-  homeWorkspace(): Promise<Result<string>>
   isCodeMode(sessionId: string): Promise<Result<boolean>>
-  inHomeWorkspace(sessionId: string): Promise<Result<boolean>>
   repositories(query: string | null, sessionId: string | null): Promise<Result<RepositorySummary[]>>
   branches(repository: string, sessionId: string | null): Promise<Result<BranchList>>
   repositoriesByAccount(): Promise<Result<AccountRepositories[]>>
@@ -51,10 +47,6 @@ interface CodeRemote {
   previewUrl(sessionId: string, port: number): Promise<Result<string>>
   settings(): Promise<Result<CodeSettingsView>>
   updateSettings(settings: CodeSettings): Promise<Result<CodeSettingsView>>
-}
-
-interface UiWorkspaceFace {
-  startSession(workspaceId?: string, options?: { readonly agentPreset?: string }): void
 }
 
 /** The parts of `ctx.commandUi` (ui-commands) this plugin uses: rows of the composer's + and / menu. */
@@ -176,38 +168,12 @@ function register(ctx: Context): void {
     return () => { clearInterval(timer) }
   }, 'dsh-code: session state')
 
-  const uiWorkspace = (): UiWorkspaceFace | undefined => {
-    try {
-      return ctx.get('uiWorkspace' as never) as UiWorkspaceFace | undefined
-    } catch {
-      // The context was disposed (reconnect or reload); its replacement handles the next selection.
-      return undefined
-    }
-  }
-  const home = cell<string | null>(null)
-  const ensureHome = async (): Promise<string | undefined> => {
-    const known = home.getSnapshot()
-    if (known !== null) return known
-    const result = await api().homeWorkspace().catch(() => undefined)
-    if (result === undefined || !result.ok) return undefined
-    home.set(result.value)
-    return result.value
-  }
-  // Choosing Code mode on a session outside the Code Workspace starts a blank Code session there instead:
-  // Workspace membership is fixed at creation. The new session's own selection finds it already home.
+  // A Code session stays in the Workspace the user picked; its work happens in the checkout, which its working
+  // directory moves into on the first message. Mode changes only refresh what the client knows.
   ctx.effect(() => face.remote.$on('agent-preset/selected', (rawId, agentPreset) => {
-    const sessionId = String(rawId)
-    void checkMode(sessionId)
-    if (agentPreset !== PRESET_ID) {
-      void refresh()
-      return
-    }
-    void api().inHomeWorkspace(sessionId).then(async (home) => {
-      if (!home.ok || home.value) return
-      const workspaceId = await ensureHome()
-      if (workspaceId !== undefined) uiWorkspace()?.startSession(workspaceId, { agentPreset: PRESET_ID })
-    }).catch(() => undefined)
-  }), 'dsh-code: Code mode moves into the Code Workspace')
+    void checkMode(String(rawId))
+    if (agentPreset !== PRESET_ID) void refresh()
+  }), 'dsh-code: follow mode changes')
 
   /** @returns undefined when the session is gone, else why it could not be removed. */
   const removeSession = async (sessionId: string): Promise<string | undefined> => {

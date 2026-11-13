@@ -475,20 +475,6 @@ export class CodeWorkspacesService extends TypertRemoteService {
     return this.selfTestReport
   }
 
-  /**
-   * Ensure the Harness Workspace that groups Code sessions in the sidebar.
-   * Blank Code sessions start there; each one moves its working directory
-   * into its own checkout when it is provisioned.
-   * @returns the Workspace id.
-   */
-  @Remote
-  async homeWorkspace(): Promise<string> {
-    const registry = this.ctx.get('workspaceRegistry') as { create(path: string, title?: string): Promise<{ readonly id: string }> } | undefined
-    if (registry === undefined) throw new RemoteError('code/failed', 'this Harness has no workspace registry', { reason: 'unsupported' })
-    const path = join(this.config.dataDir, 'sessions')
-    await mkdir(path, { recursive: true })
-    return String((await registry.create(path, 'Code')).id)
-  }
 
   /**
    * Whether a session runs in Code mode, read from the Harness every time (never cached here), so it
@@ -510,21 +496,6 @@ export class CodeWorkspacesService extends TypertRemoteService {
     return (presets.composedPreset(agent.ctx) ?? presets.presetForSession(agent.session) ?? presets.defaultId) === this.config.presetId
   }
 
-  /**
-   * Whether a session was created in the Code Workspace. Workspace membership
-   * is fixed when a session is created, so a session that chose Code mode
-   * elsewhere is replaced by a blank Code session there.
-   * @param sessionId - session id.
-   * @returns true when the session's recorded directory is the Code Workspace.
-   */
-  @Remote
-  async inHomeWorkspace(sessionId: string): Promise<boolean> {
-    const agents = this.ctx.get('agents') as { get(id: string): Agent | undefined } | undefined
-    const cwd = agents?.get(sessionId)?.session.header.cwd
-    if (cwd === undefined) return false
-    const canonical = async (path: string): Promise<string> => realpath(path).catch(() => path)
-    return await canonical(cwd) === await canonical(join(this.config.dataDir, 'sessions'))
-  }
 
   /**
    * Repositories the session's GitHub account can access.

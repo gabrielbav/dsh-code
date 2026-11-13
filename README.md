@@ -6,7 +6,7 @@ Docs: [spec](https://github.com/gabrielbav/dsh-code/blob/main/docs/spec.md) · [
 
 ## What you get
 
-- **"Code mode" in the Harness mode selector.** Choosing it on a new session starts a blank Code session in the "Code" Workspace, so Code sessions group under one sidebar entry. Switching to another mode before the first message drops the session's Code choices.
+- **"Code mode" in the Harness mode selector**, in any Workspace you pick. The Workspace only groups the session in the sidebar: from the first message the session works in its own checkout. Switching to another mode before the first message drops the session's Code choices.
 - **Repository and Branch in the composer's + menu** (also `/repository` and `/branch`), shown only on a Code mode session. Repository lists the repositories of every account the host's `gh` CLI is signed in with, grouped by account; the group you pick from is the account that clones, pushes and opens the pull request. The branch defaults to the repository's default branch. The row in use is marked "in use". A status line above the composer names the choice until the workspace is ready.
 - **An Environment tab** beside Chat and Trajectory: where the session runs. For a Code session: GitHub account, repository, base branch and commit, working branch, workspace status, container, runtime, image, network policy and limits.
 - **One gVisor container and one checkout per session.** The first message waits until the workspace is ready; follow-up messages reuse it. Parallel sessions never share a writable filesystem.
