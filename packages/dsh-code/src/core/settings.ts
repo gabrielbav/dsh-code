@@ -62,7 +62,7 @@ export function validateSettings(input: CodeSettings): CodeSettings {
     return login
   }))]
   if (typeof input.newBranch !== 'boolean') throw new SettingsError('newBranch', 'must be true or false')
-  for (const field of ['readOnlyWorkspace', 'dependencyCache', 'lockdown', 'previewEnabled'] as const) {
+  for (const field of ['readOnlyWorkspace', 'dependencyCache', 'lockdown', 'previewEnabled', 'isolatedBrowser'] as const) {
     if (typeof input[field] !== 'boolean') throw new SettingsError(field, 'must be true or false')
   }
   if (!Array.isArray(input.readOnlyFolders) || input.readOnlyFolders.length > 32) throw new SettingsError('readOnlyFolders', 'must be a list of at most 32 folders')
@@ -99,11 +99,12 @@ export function validateSettings(input: CodeSettings): CodeSettings {
     environment,
     lockdown: input.lockdown,
     previewEnabled: input.previewEnabled,
+    isolatedBrowser: input.isolatedBrowser,
   }
 }
 
 /** Config fields Settings > Code edits; all apply without restarting Harness. */
-export const SETTINGS_FIELDS = ['network', 'allow', 'privateAllow', 'ports', 'cpus', 'memoryMb', 'pids', 'tmpMb', 'maxWorkspaces', 'workerImage', 'previewPorts', 'disabledAccounts', 'newBranch', 'shmMb', 'readOnlyWorkspace', 'dependencyCache', 'readOnlyFolders', 'environment', 'lockdown', 'previewEnabled'] as const satisfies ReadonlyArray<keyof CodeSettings>
+export const SETTINGS_FIELDS = ['network', 'allow', 'privateAllow', 'ports', 'cpus', 'memoryMb', 'pids', 'tmpMb', 'maxWorkspaces', 'workerImage', 'previewPorts', 'disabledAccounts', 'newBranch', 'shmMb', 'readOnlyWorkspace', 'dependencyCache', 'readOnlyFolders', 'environment', 'lockdown', 'previewEnabled', 'isolatedBrowser'] as const satisfies ReadonlyArray<keyof CodeSettings>
 
 /**
  * Whether two configs differ only in live-applicable settings.

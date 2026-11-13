@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Button, Input, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, PreviewTargets, ProvisionStep, SessionOverrides, SessionOverridesView, SessionVariables, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { BrowserAction, CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, IsolatedFrame, PreviewTargets, ProvisionStep, SessionOverrides, SessionOverridesView, SessionVariables, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -359,7 +359,7 @@ export interface SettingsInjected {
 }
 
 type Draft = Record<'allow' | 'privateAllow' | 'ports' | 'previewPorts' | 'cpus' | 'memoryMb' | 'pids' | 'tmpMb' | 'maxWorkspaces' | 'workerImage' | 'shmMb' | 'readOnlyFolders' | 'environment', string>
-  & { network: CodeSettings['network']; disabledAccounts: readonly string[]; newBranch: boolean; readOnlyWorkspace: boolean; dependencyCache: boolean; lockdown: boolean; previewEnabled: boolean }
+  & { network: CodeSettings['network']; disabledAccounts: readonly string[]; newBranch: boolean; readOnlyWorkspace: boolean; dependencyCache: boolean; lockdown: boolean; previewEnabled: boolean; isolatedBrowser: boolean }
 
 function toDraft(settings: CodeSettings): Draft {
   return {
@@ -371,7 +371,7 @@ function toDraft(settings: CodeSettings): Draft {
     disabledAccounts: settings.disabledAccounts, newBranch: settings.newBranch,
     shmMb: String(settings.shmMb), readOnlyFolders: settings.readOnlyFolders.join('\n'), environment: settings.environment.join('\n'),
     readOnlyWorkspace: settings.readOnlyWorkspace, dependencyCache: settings.dependencyCache, lockdown: settings.lockdown,
-    previewEnabled: settings.previewEnabled,
+    previewEnabled: settings.previewEnabled, isolatedBrowser: settings.isolatedBrowser,
   }
 }
 
@@ -392,7 +392,7 @@ export function fromDraft(draft: Draft): CodeSettings {
     shmMb: Number(draft.shmMb), readOnlyFolders: draft.readOnlyFolders.split('\n').map(x => x.trim()).filter(x => x !== ''),
     environment: draft.environment.split('\n').map(x => x.trim()).filter(x => x !== ''),
     readOnlyWorkspace: draft.readOnlyWorkspace, dependencyCache: draft.dependencyCache, lockdown: draft.lockdown,
-    previewEnabled: draft.previewEnabled,
+    previewEnabled: draft.previewEnabled, isolatedBrowser: draft.isolatedBrowser,
   }
 }
 
@@ -427,13 +427,13 @@ export function CodeSettingsSection({ load, save, accounts, pickFolder, t }: Set
     return () => { live = false }
   }, [load, t])
   if (draft === null) return <div style={note}>{message ?? t('picker.loading')}</div>
-  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow' | 'disabledAccounts' | 'newBranch' | 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'previewEnabled' | 'readOnlyFolders' | 'environment'>, type: 'text' | 'number' = 'text'): ReactNode => (
+  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow' | 'disabledAccounts' | 'newBranch' | 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'previewEnabled' | 'isolatedBrowser' | 'readOnlyFolders' | 'environment'>, type: 'text' | 'number' = 'text'): ReactNode => (
     <label style={{ display: 'grid', gap: 4 }}>
       <span style={note}>{t(`settings.${key}`)}</span>
       <Input aria-label={t(`settings.${key}`)} type={type} value={draft[key]} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }) }} />
     </label>
   )
-  const toggle = (key: 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'previewEnabled', hint: string): ReactNode => (
+  const toggle = (key: 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'previewEnabled' | 'isolatedBrowser', hint: string): ReactNode => (
     <div style={{ display: 'grid', gap: 2, maxWidth: 560 }}>
       <div style={{ ...row, justifyContent: 'space-between' }}>
         <span>{t(`settings.${key}`)}</span>
@@ -555,6 +555,7 @@ export function CodeSettingsSection({ load, save, accounts, pickFolder, t }: Set
       <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 8 }}>
         <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.preview')}</legend>
         {toggle('previewEnabled', t('settings.previewEnabledHint'))}
+        {draft.previewEnabled && toggle('isolatedBrowser', t('settings.isolatedBrowserHint'))}
         {field('previewPorts')}
       </fieldset>
       <div style={row}>
@@ -626,7 +627,10 @@ function SessionOverridesEditor({ load, save, t }: { readonly load: () => Promis
           label={t('env.previewForSession')}
           value={choice}
           onChange={(next) => {
-            const overrides: SessionOverrides = next === 'default' ? {} : { preview: next === 'on' }
+            const overrides: SessionOverrides = {
+              ...view.overrides.isolatedBrowser === undefined ? {} : { isolatedBrowser: view.overrides.isolatedBrowser },
+              ...next === 'default' ? {} : { preview: next === 'on' },
+            }
             void save(overrides).then((r) => { if (r.ok) { setView(r.value); setMessage(null) } else setMessage(t('error.generic', { error: r.message })) })
           }}
           options={[
@@ -636,6 +640,32 @@ function SessionOverridesEditor({ load, save, t }: { readonly load: () => Promis
           ]}
         />
       </div>
+      {view.effective.preview && (
+        <div style={{ ...row, justifyContent: 'space-between' }}>
+          <span>{t('env.isolatedForSession')}</span>
+          {view.lockdown
+            ? <span style={note}>{t('env.isolatedByLockdown')}</span>
+            : (
+              <SegmentedControl<'default' | 'on' | 'off'>
+                id="dsh-code-session-isolated"
+                label={t('env.isolatedForSession')}
+                value={view.overrides.isolatedBrowser === undefined ? 'default' : view.overrides.isolatedBrowser ? 'on' : 'off'}
+                onChange={(next) => {
+                  const overrides: SessionOverrides = {
+                    ...view.overrides.preview === undefined ? {} : { preview: view.overrides.preview },
+                    ...next === 'default' ? {} : { isolatedBrowser: next === 'on' },
+                  }
+                  void save(overrides).then((r) => { if (r.ok) { setView(r.value); setMessage(null) } else setMessage(t('error.generic', { error: r.message })) })
+                }}
+                options={[
+                  { value: 'default', label: t('env.default', { value: view.defaults.isolatedBrowser ? t('env.on') : t('env.off') }) },
+                  { value: 'on', label: t('env.on') },
+                  { value: 'off', label: t('env.off') },
+                ]}
+              />
+            )}
+        </div>
+      )}
       {message !== null && <div style={note} role="alert">{message}</div>}
     </section>
   )
@@ -737,6 +767,123 @@ export interface PreviewTabInjected {
   readonly sessionId: string
   readonly targets: () => Promise<Outcome<PreviewTargets>>
   readonly open: (port: number) => Promise<Outcome<string>>
+  readonly mode: () => Promise<Outcome<SessionOverridesView>>
+  readonly frame: (port: number, after: number) => Promise<Outcome<IsolatedFrame | null>>
+  readonly input: (action: BrowserAction) => Promise<Outcome<boolean>>
+  readonly stop: () => Promise<Outcome<void>>
+}
+
+const MODIFIER_BITS = (event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): number =>
+  (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0)
+
+/**
+ * The isolated browser: Chromium runs inside the workspace and this view shows its screencast frames, forwarding
+ * mouse, wheel and keyboard input. No page code runs in the viewer's browser.
+ */
+function IsolatedView({ port, frame, input, stop, t }: {
+  readonly port: number
+  readonly frame: (port: number, after: number) => Promise<Outcome<IsolatedFrame | null>>
+  readonly input: (action: BrowserAction) => Promise<Outcome<boolean>>
+  readonly stop: () => Promise<Outcome<void>>
+  readonly t: T
+}): ReactNode {
+  const [picture, setPicture] = useState<IsolatedFrame | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [box, setBox] = useState<HTMLDivElement | null>(null)
+  const [image, setImage] = useState<HTMLImageElement | null>(null)
+  // Long-poll frames while mounted.
+  useEffect(() => {
+    let live = true
+    let seq = 0
+    const loop = async (): Promise<void> => {
+      while (live) {
+        const r = await frame(port, seq)
+        if (!live) return
+        if (!r.ok) { setError(r.message); await new Promise(res => setTimeout(res, 2000)); continue }
+        setError(null)
+        if (r.value !== null) { seq = r.value.seq; setPicture(r.value) }
+      }
+    }
+    void loop()
+    return () => { live = false }
+  }, [port, frame])
+  useEffect(() => () => { void stop() }, [stop])
+  // Follow the tab's size.
+  useEffect(() => {
+    if (box === null) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry === undefined) return
+      clearTimeout(timer)
+      timer = setTimeout(() => { void input({ kind: 'resize', width: Math.round(entry.contentRect.width), height: Math.round(entry.contentRect.height) }) }, 250)
+    })
+    observer.observe(box)
+    return () => { observer.disconnect(); clearTimeout(timer) }
+  }, [box, input])
+  const point = (event: { clientX: number; clientY: number }): { x: number; y: number } | undefined => {
+    if (image === null || picture === null) return undefined
+    const rect = image.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return undefined
+    return { x: (event.clientX - rect.left) * (picture.width / rect.width), y: (event.clientY - rect.top) * (picture.height / rect.height) }
+  }
+  const button = (b: number): 'left' | 'middle' | 'right' => b === 1 ? 'middle' : b === 2 ? 'right' : 'left'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <div style={{ ...row, padding: '6px 12px', borderBottom: '1px solid var(--dsw-alias-border-default, rgba(127,127,127,.25))' }}>
+        <Button size="sm" variant="outline" onClick={() => { void input({ kind: 'history', action: 'back' }) }}>{t('previewTab.back')}</Button>
+        <Button size="sm" variant="outline" onClick={() => { void input({ kind: 'history', action: 'forward' }) }}>{t('previewTab.forward')}</Button>
+        <Button size="sm" variant="outline" onClick={() => { void input({ kind: 'history', action: 'reload' }) }}>{t('previewTab.reload')}</Button>
+        <span style={{ ...note, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{picture?.url ?? ''}</span>
+        <span style={note}>{t('previewTab.isolatedBrowser')}</span>
+      </div>
+      {error !== null && <div style={{ ...note, padding: 12 }} role="alert">{t('error.generic', { error })}</div>}
+      <div
+        ref={setBox}
+        tabIndex={0}
+        style={{ flex: 1, minHeight: 0, overflow: 'hidden', outline: 'none', background: '#fff', position: 'relative' }}
+        onKeyDown={(event) => {
+          event.preventDefault()
+          const printable = event.key.length === 1 && !event.ctrlKey && !event.metaKey
+          void input({ kind: 'key', event: 'keyDown', key: event.key, code: event.code, text: printable ? event.key : event.key === 'Enter' ? '\r' : '', keyCode: event.keyCode, modifiers: MODIFIER_BITS(event) })
+        }}
+        onKeyUp={(event) => {
+          event.preventDefault()
+          void input({ kind: 'key', event: 'keyUp', key: event.key, code: event.code, text: '', keyCode: event.keyCode, modifiers: MODIFIER_BITS(event) })
+        }}
+      >
+        {picture === null
+          ? <div style={{ ...note, padding: 16 }}>{t('previewTab.starting')}</div>
+          : (
+            <img
+              ref={setImage}
+              alt={t('previewTab.frameTitle', { port: String(port) })}
+              src={`data:image/jpeg;base64,${picture.image}`}
+              draggable={false}
+              style={{ display: 'block', maxWidth: '100%', maxHeight: '100%', userSelect: 'none' }}
+              onContextMenu={(event) => { event.preventDefault() }}
+              onMouseDown={(event) => {
+                event.preventDefault()
+                box?.focus()
+                const p = point(event)
+                if (p !== undefined) void input({ kind: 'mouse', event: 'mousePressed', ...p, button: button(event.button), clickCount: event.detail || 1, modifiers: MODIFIER_BITS(event) })
+              }}
+              onMouseUp={(event) => {
+                const p = point(event)
+                if (p !== undefined) void input({ kind: 'mouse', event: 'mouseReleased', ...p, button: button(event.button), clickCount: event.detail || 1, modifiers: MODIFIER_BITS(event) })
+              }}
+              onMouseMove={(event) => {
+                const p = point(event)
+                if (p !== undefined && event.buttons === 0) void input({ kind: 'mouse', event: 'mouseMoved', ...p, button: 'none', clickCount: 0, modifiers: MODIFIER_BITS(event) })
+              }}
+              onWheel={(event) => {
+                const p = point(event)
+                if (p !== undefined) void input({ kind: 'wheel', ...p, deltaX: event.deltaX, deltaY: event.deltaY, modifiers: MODIFIER_BITS(event) })
+              }}
+            />
+          )}
+      </div>
+    </div>
+  )
 }
 
 /** The same capabilities the preview response grants through its CSP; never allow-same-origin. */
@@ -749,7 +896,7 @@ const PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals all
  * @param props - injected loaders, state and translator.
  * @returns the preview.
  */
-export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t }: InjectFace<PreviewTabInjected> & PropsLocale<typeof NS>): ReactNode {
+export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, mode, frame, input, stop, t }: InjectFace<PreviewTabInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(v => v)
   const codeMode = usePresetIds(ids => ids.has(sessionId))
   const ready = view !== null && view.status === 'ready'
@@ -758,6 +905,14 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
   const [src, setSrc] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [frameKey, setFrameKey] = useState(0)
+  const [isolated, setIsolated] = useState<boolean | null>(null)
+  useEffect(() => {
+    let live = true
+    const check = (): void => { void mode().then((r) => { if (live && r.ok) setIsolated(r.value.effective.preview && r.value.effective.isolatedBrowser) }) }
+    check()
+    const timer = setInterval(check, 5000)
+    return () => { live = false; clearInterval(timer) }
+  }, [mode])
   useEffect(() => {
     if (!ready) return
     let live = true
@@ -779,7 +934,7 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
     setPort(openable[0]?.port ?? null)
   }, [openable.map(p => p.port).join(','), port])
   useEffect(() => {
-    if (port === null) { setSrc(null); return }
+    if (port === null || isolated !== false) { setSrc(null); return }
     let live = true
     setError(null)
     void open(port).then((r) => {
@@ -788,7 +943,7 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
       else { setSrc(null); setError(r.message) }
     })
     return () => { live = false }
-  }, [port, open])
+  }, [port, open, isolated])
   if (!codeMode) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notCode')}</div>
   if (!ready) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notReady')}</div>
   if (error !== null && /Preview is off/.test(error)) return <div style={{ ...note, padding: 16 }}>{t('previewTab.off')}</div>
@@ -799,14 +954,16 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
         {openable.map(p => (
           <Button key={p.port} size="sm" variant={p.port === port ? 'primary' : 'outline'} onClick={() => { setPort(p.port) }}>{`:${p.port}`}</Button>
         ))}
-        {port !== null && <Button size="sm" variant="outline" onClick={() => { setFrameKey(k => k + 1) }}>{t('previewTab.reload')}</Button>}
+        {port !== null && isolated === false && <Button size="sm" variant="outline" onClick={() => { setFrameKey(k => k + 1) }}>{t('previewTab.reload')}</Button>}
         {blocked.map(p => (
           <span key={p.port} style={note}>{`:${p.port} ${!p.allowed ? t('preview.notAllowed') : t('preview.notRunning')}`}</span>
         ))}
-        <span style={{ ...note, marginLeft: 'auto' }}>{t('previewTab.isolated')}</span>
+        <span style={{ ...note, marginLeft: 'auto' }}>{isolated === true ? t('previewTab.isolatedBrowser') : t('previewTab.isolated')}</span>
       </div>
       {error !== null && <div style={{ ...note, padding: 12 }} role="alert">{t('error.generic', { error })}</div>}
-      {src === null
+      {isolated === true && port !== null
+        ? <IsolatedView key={port} port={port} frame={frame} input={input} stop={stop} t={t} />
+        : src === null
         ? <div style={{ ...note, padding: 16 }}>{list === null ? t('picker.loading') : t('preview.nothingListening')}</div>
         : (
           <iframe

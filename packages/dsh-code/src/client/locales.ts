@@ -5,6 +5,14 @@ export const NS = 'dsh-code'
 
 export const en = {
   'dialog.title': 'Code mode',
+  'settings.isolatedBrowser': 'Isolated browser',
+  'settings.isolatedBrowserHint': 'Show previews through Chromium running inside the sandbox instead of your own browser: page code never runs on your computer, and apps with logins work. Uses about 300–500 MB of memory per open preview. Lockdown forces it.',
+  'env.isolatedForSession': 'Isolated browser',
+  'env.isolatedByLockdown': 'on (Lockdown)',
+  'previewTab.isolatedBrowser': 'Isolated browser: the page runs inside the sandbox',
+  'previewTab.starting': 'Starting the isolated browser…',
+  'previewTab.back': 'Back',
+  'previewTab.forward': 'Forward',
   'settings.preview': 'Preview',
   'settings.previewEnabled': 'Preview tab',
   'settings.previewEnabledHint': 'Show the web app running in a Code session in its Preview tab. A session can turn it on or off in its Environment tab.',
@@ -181,6 +189,14 @@ export type CodeKey = keyof typeof en
 
 export const zh: Record<CodeKey, string> = {
   'dialog.title': '代码模式',
+  'settings.isolatedBrowser': '隔离浏览器',
+  'settings.isolatedBrowserHint': '通过沙箱内运行的 Chromium 显示预览，而不是使用你自己的浏览器：页面代码不会在你的电脑上运行，需要登录的应用也能使用。每个打开的预览约占用 300–500 MB 内存。锁定模式下强制开启。',
+  'env.isolatedForSession': '隔离浏览器',
+  'env.isolatedByLockdown': '开（锁定模式）',
+  'previewTab.isolatedBrowser': '隔离浏览器：页面在沙箱内运行',
+  'previewTab.starting': '正在启动隔离浏览器…',
+  'previewTab.back': '后退',
+  'previewTab.forward': '前进',
   'settings.preview': '预览',
   'settings.previewEnabled': '预览标签',
   'settings.previewEnabledHint': '在代码会话的“预览”标签中显示其运行的 Web 应用。会话可在其“环境”标签中开启或关闭。',

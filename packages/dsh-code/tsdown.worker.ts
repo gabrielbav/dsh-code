@@ -10,7 +10,7 @@ const PACKAGE_JSON_READ = /createRequire\(import\.meta\.url\)\(["']\.\.\/package
 
 export default defineConfig({
   name: '@gabrielbav/dsh-code/fs-helper',
-  entry: { 'fs-helper': 'src/worker/fs-helper.ts' },
+  entry: { 'fs-helper': 'src/worker/fs-helper.ts', 'browser-bridge': 'src/worker/browser-bridge.ts' },
   outDir: 'worker',
   outExtensions: () => ({ js: '.js' }),
   format: 'esm',

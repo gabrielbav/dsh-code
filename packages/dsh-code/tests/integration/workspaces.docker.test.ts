@@ -3,7 +3,8 @@
  * where Docker has the runsc runtime and the dsh-code-worker image is built.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
 import { request } from 'node:http'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,7 +28,7 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
   // Its own namespace: the test never sees or removes a running dsh-code's containers, networks or proxy.
   const manager = new WorkspaceManager({
     namespace: `dsh-code-it-${process.pid}`,
-    dataDir: join(root, 'data'), image: 'dsh-code-worker:0.2.0', proxyImage: 'node:24-alpine',
+    dataDir: join(root, 'data'), image: 'dsh-code-worker:0.3.0', proxyImage: 'node:24-alpine',
     proxyDir: resolve(import.meta.dirname, '../../src/egress'),
     workerDir: resolve(import.meta.dirname, '../../worker'),
     limits: { cpus: 1, memoryMb: 1024, pids: 256, tmpMb: 256 }, policy, uid: 1000, gid: 1000, maxWorkspaces: 4, previewPorts: [8000],
@@ -137,6 +138,22 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     })
     expect(status).toBe(200)
     await expect(manager.previewRelayArgv('session-a', 22)).rejects.toThrowError(/preview port/i)
+  }, 60_000)
+
+  it('renders the app in the isolated browser inside the sandbox and refuses file: navigation', async () => {
+    // The server from the preview test still listens on 127.0.0.1:8000 in session-a.
+    const argv = await manager.browserArgv('session-a', 'http://127.0.0.1:8000/')
+    const child = spawn('docker', argv, { stdio: ['pipe', 'pipe', 'ignore'] })
+    const messages: { type: string; width?: number; url?: string }[] = []
+    const lines = createInterface({ input: child.stdout })
+    lines.on('line', (line) => { messages.push(JSON.parse(line) as { type: string }) })
+    child.stdin.write(`${JSON.stringify({ kind: 'navigate', url: 'file:///etc/passwd' })}\n`)
+    const deadline = Date.now() + 30_000
+    while (Date.now() < deadline && !messages.some(m => m.type === 'frame')) await new Promise(r => setTimeout(r, 200))
+    child.stdin.end()
+    child.kill()
+    expect(messages.find(m => m.type === 'frame')).toMatchObject({ width: 1280 })
+    expect(messages.filter(m => m.type === 'url').map(m => m.url)).toEqual(['http://127.0.0.1:8000/'])
   }, 60_000)
 
   it('refuses a destination as soon as the policy no longer allows it', async () => {

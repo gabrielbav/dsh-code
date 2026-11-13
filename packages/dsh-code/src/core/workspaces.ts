@@ -389,6 +389,18 @@ export class WorkspaceManager {
    * @param port - container port.
    * @returns argv after `docker`.
    */
+  /**
+   * `docker` arguments that run the isolated-browser bridge in the workspace, opening `url` first.
+   * @param sessionId - logical session id.
+   * @param url - start page, already checked by the caller.
+   * @returns argv after `docker`.
+   */
+  async browserArgv(sessionId: string, url: string): Promise<string[]> {
+    const record = this.require(sessionId)
+    if (record.status !== 'ready') throw new WorkspaceError('unsafe-state', `workspace is ${record.status}`)
+    return this.execArgv(record, ['node', '/opt/dsh-code/browser-bridge.js', url], record.path, {}, false)
+  }
+
   async previewRelayArgv(sessionId: string, port: number): Promise<string[]> {
     // An empty list means no restriction: links are minted only for ports found listening (see previewUrl).
     if (this.config.previewPorts.length > 0 && !this.config.previewPorts.includes(port)) throw new WorkspaceError('unsafe-state', `port ${port} is not in Settings > Code > Preview ports`)

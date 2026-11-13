@@ -1,6 +1,6 @@
 {
   "name": "@gabrielbav/dsh-code",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Code mode for DeepSeek Harness: per-session Docker + gVisor workspaces with repository and branch selection",
   "keywords": [
     "deepseek-harness",
@@ -30,7 +30,7 @@
     "node": ">=24.9.0"
   },
   "scripts": {
-    "prepack": "node -e \"const fs=require('node:fs'); for (const f of ['lib/host/workspaces-service.js','lib/client.js','worker/fs-helper.js']) fs.accessSync(f); for (const f of ['README.md','LICENSE']) fs.copyFileSync('../../'+f, f)\"",
+    "prepack": "node -e \"const fs=require('node:fs'); for (const f of ['lib/host/workspaces-service.js','lib/client.js','worker/fs-helper.js','worker/browser-bridge.js']) fs.accessSync(f); for (const f of ['README.md','LICENSE']) fs.copyFileSync('../../'+f, f)\"",
     "postpack": "node -e \"for (const f of ['README.md','LICENSE']) require('node:fs').rmSync(f, { force: true })\""
   },
   "publishConfig": {
@@ -83,6 +83,7 @@
     "cordis.patch.yml",
     "worker/Dockerfile",
     "worker/fs-helper.js",
+    "worker/browser-bridge.js",
     "README.md",
     "LICENSE",
     "!lib/**/*.tsbuildinfo",

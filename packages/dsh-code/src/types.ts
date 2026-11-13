@@ -151,6 +151,8 @@ export interface CodeSettings {
   readonly lockdown: boolean
   /** Preview tab available for Code sessions (a session can override it). */
   readonly previewEnabled: boolean
+  /** Preview through Chromium inside the sandbox instead of the viewer's browser (a session can override it). */
+  readonly isolatedBrowser: boolean
 }
 
 /** Settings plus whether they can be saved to the profile. */
@@ -191,11 +193,45 @@ export interface PreviewTargets {
 /** Per-session overrides of Settings > Code; an absent field follows Settings. */
 export interface SessionOverrides {
   readonly preview?: boolean
+  readonly isolatedBrowser?: boolean
 }
 
 /** A session's overrides and what they resolve to. */
 export interface SessionOverridesView {
   readonly overrides: SessionOverrides
-  readonly effective: { readonly preview: boolean }
-  readonly defaults: { readonly preview: boolean }
+  readonly effective: { readonly preview: boolean; readonly isolatedBrowser: boolean }
+  readonly defaults: { readonly preview: boolean; readonly isolatedBrowser: boolean }
+  /** Lockdown forces the isolated browser. */
+  readonly lockdown: boolean
+}
+
+/** Latest picture of a session's isolated browser. */
+export interface IsolatedFrame {
+  readonly seq: number
+  /** Base64 JPEG. */
+  readonly image: string
+  readonly width: number
+  readonly height: number
+  readonly url: string
+}
+
+/** One viewer action for the isolated browser; the host and the bridge both validate it. */
+export interface BrowserAction {
+  readonly kind: string
+  readonly url?: string
+  readonly action?: string
+  readonly width?: number
+  readonly height?: number
+  readonly event?: string
+  readonly x?: number
+  readonly y?: number
+  readonly button?: string
+  readonly clickCount?: number
+  readonly modifiers?: number
+  readonly deltaX?: number
+  readonly deltaY?: number
+  readonly key?: string
+  readonly code?: string
+  readonly text?: string
+  readonly keyCode?: number
 }

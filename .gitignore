@@ -5,5 +5,6 @@ lib/
 coverage/
 *.tgz
 **/worker/fs-helper.js
+**/worker/browser-bridge.js
 packages/dsh-code/README.md
 packages/dsh-code/LICENSE

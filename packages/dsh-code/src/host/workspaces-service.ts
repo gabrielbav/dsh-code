@@ -21,9 +21,10 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import { WorkspaceError, WorkspaceManager, type WorkspaceManagerConfig, type WorkspaceRecord } from '../core/workspaces.ts'
 import { EnvironmentError, environmentLines, parseEnvironment } from '../core/environment.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { AccountRepositories, BranchList, GhAccount, PreviewTargets, ProvisionStep, SessionOverrides, SessionOverridesView, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, BranchList, BrowserAction, GhAccount, IsolatedFrame, PreviewTargets, ProvisionStep, SessionOverrides, SessionOverridesView, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
 import { PREVIEW_PREFIX, PreviewProxy, relayConnection } from './preview.ts'
+import { IsolatedBrowsers } from './browser.ts'
 import { Git, gitRunner } from '../core/git.ts'
 import { DEFAULT_ALLOW, type EgressMode } from '../egress/policy.ts'
 
@@ -71,12 +72,13 @@ export interface Config {
   environment: string[]
   lockdown: boolean
   previewEnabled: boolean
+  isolatedBrowser: boolean
 }
 
 export const Config: z<Config> = z.object({
   // A root host keeps data outside /root, which the non-root container user cannot traverse.
   dataDir: z.string().default(process.getuid?.() === 0 ? '/var/lib/dsh-code' : join(homedir(), '.dsh-code')).description('Workspaces, mirrors and records'),
-  workerImage: z.string().default('dsh-code-worker:0.2.0').description('Worker image; pin by digest in production'),
+  workerImage: z.string().default('dsh-code-worker:0.3.0').description('Worker image; pin by digest in production'),
   proxyImage: z.string().default('node:24-alpine').description('Image that runs the egress proxy'),
   cpus: z.number().default(2),
   memoryMb: z.number().default(4096),
@@ -99,6 +101,7 @@ export const Config: z<Config> = z.object({
   environment: z.array(z.string()).default([]).description('Default NAME=value variables for every Code session'),
   lockdown: z.boolean().default(false).description('Network none, read-only workspace, no cache and no extra folders'),
   previewEnabled: z.boolean().default(true).description('Preview tab for Code sessions; a session can override it'),
+  isolatedBrowser: z.boolean().default(false).description('Preview through Chromium inside the sandbox; a session can override it; Lockdown forces it'),
   newBranch: z.boolean().default(true).description('Give each Code session its own dsh-code/<hash> branch; false works on the chosen branch'),
   defaultAccount: z.string().default('').description('GitHub account (gh login) new Code sessions use; empty uses the gh CLI active account'),
 })
@@ -152,7 +155,7 @@ function settingsOf(config: Config): CodeSettings {
     disabledAccounts: config.disabledAccounts, newBranch: config.newBranch,
     shmMb: config.shmMb, readOnlyWorkspace: config.readOnlyWorkspace, dependencyCache: config.dependencyCache,
     readOnlyFolders: config.readOnlyFolders, environment: config.environment, lockdown: config.lockdown,
-    previewEnabled: config.previewEnabled,
+    previewEnabled: config.previewEnabled, isolatedBrowser: config.isolatedBrowser,
   }
 }
 
@@ -224,6 +227,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
       void this.manager.reconcile().catch((error: unknown) => { ctx.logger('dsh-code').warn('reconcile failed: %s', String(error)) })
       return () => { lifetime.abort() }
     }, 'dsh-code: reconcile workspaces')
+    ctx.effect(() => () => { this.browsers.closeAll() }, 'dsh-code: close isolated browsers')
     // The Harness hides a preset that fails to load from the mode selector without telling anyone (a row that
     // registers a Host-wide service again is enough). Say so loudly in the dsh output; never block startup.
     ctx.inject(['agentPresets'], (scoped) => scoped.effect(() => {
@@ -248,6 +252,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
     }), 'dsh-code: leaving Code mode clears choices')
     ctx.effect(() => ctx.on('workspace/session-archived', ({ sessionId }) => {
       this.previews.revoke(sessionId)
+      this.browsers.close(sessionId)
       void this.manager.delete(sessionId).catch((error: unknown) => { ctx.logger('dsh-code').warn('cleanup of %s failed: %s', sessionId, String(error)) })
     }), 'dsh-code: delete workspace on archive')
     // A session deleted outright (the session-delete plugin, or anything else) must not leave its container, checkout
@@ -296,6 +301,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
       if (this.manager.get(sessionId) === undefined && !this.steps.has(sessionId) && candidates !== undefined) continue
       if (!(await this.sessionGone(sessionId))) continue
       this.previews.revoke(sessionId)
+      this.browsers.close(sessionId)
       this.selections.delete(sessionId)
       this.steps.delete(sessionId)
       await rm(this.stepsPath(sessionId), { force: true }).catch(() => undefined)
@@ -428,7 +434,11 @@ export class CodeWorkspacesService extends TypertRemoteService {
     this.manager.config.maxWorkspaces = next.maxWorkspaces
     this.manager.config.previewPorts = next.previewPorts
     this.manager.config.newBranch = next.newBranch
-    if (!next.previewEnabled) for (const record of this.manager.list()) if (this.manager.sessionOverrides(record.sessionId).preview !== true) this.previews.revoke(record.sessionId)
+    for (const record of this.manager.list()) {
+      if (!this.previewOn(record.sessionId)) { this.previews.revoke(record.sessionId); this.browsers.close(record.sessionId) }
+      else if (this.isolatedOn(record.sessionId)) this.previews.revoke(record.sessionId)
+      else this.browsers.close(record.sessionId)
+    }
     this.listing = undefined
     Object.assign(this.manager.config, sandboxOptions(next))
     await this.manager.updatePolicy({ mode: next.lockdown ? 'none' : next.network, allow: next.allow, privateAllow: next.privateAllow, ports: next.ports })
@@ -504,8 +514,76 @@ export class CodeWorkspacesService extends TypertRemoteService {
     return (await this.manager.usage(sessionId).catch(() => undefined)) ?? null
   }
 
+  private readonly browsers = new IsolatedBrowsers()
+
   private previewOn(sessionId: string): boolean {
     return this.manager.sessionOverrides(sessionId).preview ?? this.config.previewEnabled
+  }
+
+  /** Lockdown forces it; otherwise the session's choice, then Settings. */
+  private isolatedOn(sessionId: string): boolean {
+    return this.config.lockdown || (this.manager.sessionOverrides(sessionId).isolatedBrowser ?? this.config.isolatedBrowser)
+  }
+
+  /** Port check shared by both preview modes: something must listen there (or Settings must list it). */
+  private async checkPreviewPort(sessionId: string, port: number): Promise<void> {
+    if (!this.previewOn(sessionId)) throw new RemoteError('code/failed', 'Preview is off for this session', { reason: 'preview-off' })
+    if (this.manager.config.previewPorts.length === 0) {
+      const open = (await this.manager.listeningPorts(sessionId)).find(p => p.port === port)
+      if (open === undefined) throw new WorkspaceError('unsafe-state', `nothing is listening on port ${port} in this workspace`)
+    }
+    await this.manager.previewRelayArgv(sessionId, port)
+  }
+
+  /**
+   * The next frame of the session's isolated browser, starting it on `port` when it is not running. Waits up to
+   * two seconds for a frame newer than `after`.
+   * @param sessionId - session id.
+   * @param port - app port to open when the browser starts.
+   * @param after - sequence number of the last frame the viewer has.
+   * @returns the frame, or null when none arrived in time.
+   */
+  @Remote
+  async browserFrame(sessionId: string, port: number, after: number): Promise<IsolatedFrame | null> {
+    if (!this.isolatedOn(sessionId)) throw new RemoteError('code/failed', 'the isolated browser is off for this session', { reason: 'isolated-off' })
+    try {
+      if (this.browsers.get(sessionId) === undefined) await this.checkPreviewPort(sessionId, port)
+      const browser = await this.browsers.ensure(sessionId, () => this.manager.browserArgv(sessionId, `http://127.0.0.1:${port}/`))
+      const frame = await browser.next(after, 2000)
+      if (frame === undefined && browser.error !== undefined) throw new WorkspaceError('provision-failed', `isolated browser: ${browser.error}`)
+      return frame ?? null
+    } catch (error) {
+      throw error instanceof RemoteError ? error : remoteFailure(error)
+    }
+  }
+
+  /**
+   * Forward one viewer action to the session's isolated browser.
+   * @param sessionId - session id.
+   * @param action - the action; anything outside the browser protocol is dropped.
+   * @returns whether it was forwarded.
+   */
+  @Remote
+  async browserInput(sessionId: string, action: BrowserAction): Promise<boolean> {
+    if (!this.isolatedOn(sessionId) || !this.previewOn(sessionId)) return false
+    const browser = this.browsers.get(sessionId)
+    if (browser === undefined) return false
+    if (action.kind === 'navigate' && typeof action.url === 'string') {
+      // Navigation inside the preview stays on the workspace's own ports; links on the page may go further, through the egress allowlist.
+      const target = /^http:\/\/127\.0\.0\.1:(\d+)\//.exec(action.url)
+      if (target === null) return false
+      await this.checkPreviewPort(sessionId, Number(target[1])).catch(() => { throw new RemoteError('code/failed', `nothing to preview on port ${target[1]}`, { reason: 'not-listening' }) })
+    }
+    return browser.send(action)
+  }
+
+  /**
+   * Close the session's isolated browser.
+   * @param sessionId - session id.
+   */
+  @Remote
+  async browserStop(sessionId: string): Promise<void> {
+    this.browsers.close(sessionId)
   }
 
   /**
@@ -516,7 +594,11 @@ export class CodeWorkspacesService extends TypertRemoteService {
   @Remote
   async sessionOverrides(sessionId: string): Promise<SessionOverridesView> {
     const overrides = this.manager.sessionOverrides(sessionId) as SessionOverrides
-    return { overrides, effective: { preview: this.previewOn(sessionId) }, defaults: { preview: this.config.previewEnabled } }
+    return {
+      overrides, lockdown: this.config.lockdown,
+      effective: { preview: this.previewOn(sessionId), isolatedBrowser: this.isolatedOn(sessionId) },
+      defaults: { preview: this.config.previewEnabled, isolatedBrowser: this.config.isolatedBrowser },
+    }
   }
 
   /**
@@ -529,8 +611,11 @@ export class CodeWorkspacesService extends TypertRemoteService {
   async setSessionOverrides(sessionId: string, overrides: SessionOverrides): Promise<SessionOverridesView> {
     const values: Record<string, boolean> = {}
     if (typeof overrides.preview === 'boolean') values.preview = overrides.preview
+    if (typeof overrides.isolatedBrowser === 'boolean') values.isolatedBrowser = overrides.isolatedBrowser
     await this.manager.setSessionOverrides(sessionId, values)
-    if (!this.previewOn(sessionId)) this.previews.revoke(sessionId)
+    if (!this.previewOn(sessionId)) { this.previews.revoke(sessionId); this.browsers.close(sessionId) }
+    if (this.isolatedOn(sessionId)) this.previews.revoke(sessionId)
+    else this.browsers.close(sessionId)
     return this.sessionOverrides(sessionId)
   }
 
@@ -567,6 +652,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
   @Remote
   async previewUrl(sessionId: string, port: number): Promise<string> {
     if (!this.previewOn(sessionId)) throw new RemoteError('code/failed', 'Preview is off for this session', { reason: 'preview-off' })
+    // With the isolated browser on, page code must never reach the viewer's browser.
+    if (this.isolatedOn(sessionId)) throw new RemoteError('code/failed', 'this session previews through the isolated browser', { reason: 'isolated-on' })
     if (this.ctx.get('webServer' as never) === undefined) throw new RemoteError('code/failed', 'previews need the Harness web server (dsh web)', { reason: 'unsupported' })
     try {
       // Without a Preview ports list, only a port something listens on (beyond loopback) gets a link.

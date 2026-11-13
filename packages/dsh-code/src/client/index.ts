@@ -11,7 +11,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { AccountRepositories, GhAccount, PreviewTargets, SessionOverrides, SessionOverridesView, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, BrowserAction, GhAccount, IsolatedFrame, PreviewTargets, SessionOverrides, SessionOverridesView, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CodeSettingsSection, EnvironmentTab, PreviewTab, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
@@ -33,6 +33,9 @@ interface CodeRemote {
   ghAccounts(): Promise<Result<GhAccount[]>>
   previewTargets(sessionId: string): Promise<Result<PreviewTargets>>
   sessionOverrides(sessionId: string): Promise<Result<SessionOverridesView>>
+  browserFrame(sessionId: string, port: number, after: number): Promise<Result<IsolatedFrame | null>>
+  browserInput(sessionId: string, action: BrowserAction): Promise<Result<boolean>>
+  browserStop(sessionId: string): Promise<Result<void>>
   setSessionOverrides(sessionId: string, overrides: SessionOverrides): Promise<Result<SessionOverridesView>>
   sessionVariables(sessionId: string): Promise<Result<SessionVariables>>
   setSessionVariables(sessionId: string, lines: string[]): Promise<Result<SessionVariables>>
@@ -302,6 +305,10 @@ function register(ctx: Context): void {
         hooks: { view: viewOf(sessionId), presetIds }, sessionId,
         targets: async () => outcome(await api().previewTargets(sessionId)),
         open: async (port: number) => outcome(await api().previewUrl(sessionId, port)),
+        mode: async () => outcome(await api().sessionOverrides(sessionId)),
+        frame: async (port: number, after: number) => outcome(await api().browserFrame(sessionId, port, after)),
+        input: async (action: BrowserAction) => outcome(await api().browserInput(sessionId, action)),
+        stop: async () => outcome(await api().browserStop(sessionId)),
       }
     },
   }, PreviewTab as ComponentType<never>))

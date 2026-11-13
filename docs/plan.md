@@ -21,6 +21,9 @@ Status of [spec.md](spec.md) as implemented in this repository, and the open wor
 | UI: Code mode in the mode selector, + menu Repository (grouped by gh account) and Branch, status line, Environment tab, Diff / Create PR / Resources / Preview / Restart / Delete, Settings > Code, guided setup above the composer | `src/client/*` | real Web app run (Code mode, + menu, accounts, Environment); typecheck + build (Settings, Resources, Preview) |
 | Per-session GitHub account: token passed to host `gh`/`git` only, stored in the workspace record | `src/core/github.ts`, `src/core/workspaces.ts` | real `gh` with four accounts |
 | Code mode read from the Harness on every check (`agentPresets.composedPreset` / `presetForSession`), so it survives restarts | `CodeWorkspacesService.isCodeMode` | real Web app run |
+| Preview tab through a docker exec relay (works on macOS/Windows), frame mode and isolated browser (Chromium in the sandbox, screencast), on/off in Settings and per session | `src/host/preview.ts`, `src/host/browser.ts`, `src/worker/browser-*` | live tests (relay, isolated browser) |
+| Cleanup of workspaces whose session was deleted outright (event + sweep) | `CodeWorkspacesService.collect` | real app (5 containers, 7 checkouts removed) |
+| Real exit codes (`setsid --wait`) | `src/host/subprocess-docker.ts` | live test |
 | First message held until provisioned; working directory moved into the checkout | `CodeWorkspacesService.hold` | real Web app run |
 | File operations run inside the container (closes the symlink race) | `src/host/fs-container.ts`, `src/host/fs-helper-client.ts`, `src/worker/*`, `tsdown.worker.ts` | unit tests; manual race run below; live race test written, not yet run |
 | Settings > Code page, saved through `ctx.configEditor`, applied in place via `internal/update` | `src/core/settings.ts`, `CodeWorkspacesService.updateSettings`, `CodeSettingsSection` | unit tests (validation, live-vs-restart) |
@@ -81,7 +84,7 @@ Team deployment (spec §12): Harness has no user/org model or managed worker hos
 pnpm install
 pnpm run build
 pnpm test
-pnpm run test:docker   # needs Docker with runsc and, after the build: docker build -t dsh-code-worker:0.2.0 packages/dsh-code/worker
+pnpm run test:docker   # needs Docker with runsc and, after the build: docker build -t dsh-code-worker:0.3.0 packages/dsh-code/worker
 ```
 
 To test inside Harness: build the fork from source (`pnpm run build:artifacts`), then `pnpm pack` this package and `dsh plugin --profile web add <tgz>` with a scratch `DSH_HOME`. Without a model key, run `pnpm run mock:llm` in the fork and start Harness with `DEEPSEEK_API_KEY=mock-key DEEPSEEK_BASE_URL=http://127.0.0.1:8000/v1`.
