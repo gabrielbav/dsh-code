@@ -23,7 +23,7 @@ import { EnvironmentError, environmentLines, parseEnvironment } from '../core/en
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
 import type { AccountRepositories, BranchList, GhAccount, PreviewTargets, ProvisionStep, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
-import { PREVIEW_PREFIX, PreviewProxy } from './preview.ts'
+import { PREVIEW_PREFIX, PreviewProxy, relayConnection } from './preview.ts'
 import { Git, gitRunner } from '../core/git.ts'
 import { DEFAULT_ALLOW, type EgressMode } from '../egress/policy.ts'
 
@@ -202,7 +202,10 @@ export class CodeWorkspacesService extends TypertRemoteService {
       ...sandboxOptions(config),
     }, undefined, new Git(gitRunner('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'])),
     async account => this.github.credentials(account))
-    this.previews = new PreviewProxy((sessionId, port) => this.manager.previewAddress(sessionId, port))
+    this.previews = new PreviewProxy(async (sessionId, port) => {
+      const argv = await this.manager.previewRelayArgv(sessionId, port)
+      return { port, connect: () => relayConnection(argv) }
+    })
     // Settings > Code changes apply in place; anything else restarts the plugin as usual.
     ctx.on('internal/update', (next: Config, restart) => {
       if (!onlySettingsChanged(this.config, next)) return restart()
@@ -534,9 +537,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
       if (this.manager.config.previewPorts.length === 0) {
         const open = (await this.manager.listeningPorts(sessionId)).find(p => p.port === port)
         if (open === undefined) throw new WorkspaceError('unsafe-state', `nothing is listening on port ${port} in this workspace`)
-        if (open.localOnly) throw new WorkspaceError('unsafe-state', `port ${port} listens on 127.0.0.1 only; start the app on 0.0.0.0`)
       }
-      await this.manager.previewAddress(sessionId, port)
+      await this.manager.previewRelayArgv(sessionId, port)
     } catch (error) {
       throw remoteFailure(error)
     }

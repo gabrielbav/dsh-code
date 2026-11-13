@@ -50,7 +50,7 @@ describe('guided setup checks', () => {
   })
 
   it('refuses ports outside a non-empty Preview ports list', async () => {
-    await expect(manager(() => ok()).previewAddress('s', 22)).rejects.toThrowError(/not in Settings > Code > Preview ports/)
+    await expect(manager(() => ok()).previewRelayArgv('s', 22)).rejects.toThrowError(/not in Settings > Code > Preview ports/)
   })
 })
 

@@ -727,7 +727,7 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
     const timer = setInterval(tick, 3000)
     return () => { live = false; clearInterval(timer) }
   }, [ready, targets])
-  const openable = (list?.targets ?? []).filter(p => p.listening && !p.localOnly && p.allowed)
+  const openable = (list?.targets ?? []).filter(p => p.listening && p.allowed)
   // Pick the first open port by itself; keep the user's choice while it stays open.
   useEffect(() => {
     if (port !== null && openable.some(p => p.port === port)) return
@@ -746,7 +746,7 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
   }, [port, open])
   if (!codeMode) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notCode')}</div>
   if (!ready) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notReady')}</div>
-  const blocked = (list?.targets ?? []).filter(p => !(p.listening && !p.localOnly && p.allowed))
+  const blocked = (list?.targets ?? []).filter(p => !(p.listening && p.allowed))
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ ...row, padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-default, rgba(127,127,127,.25))' }}>
@@ -755,7 +755,7 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
         ))}
         {port !== null && <Button size="sm" variant="outline" onClick={() => { setFrameKey(k => k + 1) }}>{t('previewTab.reload')}</Button>}
         {blocked.map(p => (
-          <span key={p.port} style={note}>{`:${p.port} ${!p.allowed ? t('preview.notAllowed') : !p.listening ? t('preview.notRunning') : t('preview.localOnly')}`}</span>
+          <span key={p.port} style={note}>{`:${p.port} ${!p.allowed ? t('preview.notAllowed') : t('preview.notRunning')}`}</span>
         ))}
         <span style={{ ...note, marginLeft: 'auto' }}>{t('previewTab.isolated')}</span>
       </div>

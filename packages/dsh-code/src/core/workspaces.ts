@@ -41,6 +41,9 @@ export interface WorkspaceRecord {
   updatedAt: string
 }
 
+/** Relay run by `node -e` inside the container: stdin/stdout <-> 127.0.0.1:<port>. */
+const PREVIEW_RELAY = "const s=require('net').connect(+process.argv[1],'127.0.0.1');process.stdin.pipe(s);s.pipe(process.stdout);s.on('error',()=>process.exit(1));s.on('close',()=>process.exit(0));process.stdin.on('end',()=>s.end())"
+
 /** One TCP port a workspace process listens on. */
 export interface ListeningPort {
   readonly port: number
@@ -369,15 +372,24 @@ export class WorkspaceManager {
     return parseListeningPorts(text)
   }
 
-  async previewAddress(sessionId: string, port: number): Promise<{ host: string; port: number }> {
+  /**
+   * `docker` arguments that open one connection to a port inside the workspace: a small Node relay connects to
+   * 127.0.0.1 inside the container and carries the raw TCP bytes over the exec's stdin/stdout. Works on every host
+   * (no route from the host into the container is needed) and reaches apps bound to 127.0.0.1 too.
+   * @param sessionId - logical session id.
+   * @param port - container port.
+   * @returns argv after `docker`.
+   */
+  async previewRelayArgv(sessionId: string, port: number): Promise<string[]> {
     // An empty list means no restriction: links are minted only for ports found listening (see previewUrl).
     if (this.config.previewPorts.length > 0 && !this.config.previewPorts.includes(port)) throw new WorkspaceError('unsafe-state', `port ${port} is not in Settings > Code > Preview ports`)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new WorkspaceError('unsafe-state', `invalid port ${port}`)
     const record = this.require(sessionId)
     if (record.status !== 'ready') throw new WorkspaceError('unsafe-state', `workspace is ${record.status}`)
-    const host = await this.docker.exec(['inspect', '--format', `{{(index .NetworkSettings.Networks "${this.internalNetwork}").IPAddress}}`, record.containerName])
-    if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) throw new WorkspaceError('unsafe-state', 'workspace has no internal address')
-    return { host, port }
+    return this.execArgv(record, ['node', '-e', PREVIEW_RELAY, String(port)], record.path, {}, false)
   }
+
+
 
   /** Load records from disk and reconcile them against Docker state. */
 

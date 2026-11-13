@@ -14,6 +14,8 @@
  *   and the container cannot set cookies on the Harness origin.
  */
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
+import { Duplex } from 'node:stream'
+import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 
 /** Route prefix on the Harness web server. */
@@ -36,7 +38,12 @@ interface Grant {
 }
 
 /** Resolves a session's preview port to an internal address. */
-export type PreviewResolver = (sessionId: string, port: number) => Promise<{ host: string; port: number }>
+/**
+ * Maps a grant to its target: the container port and a function opening one connection to it. The connection is a
+ * stream relayed by `docker exec` into the container, so no network route from the host to the container is needed
+ * (macOS and Windows hosts cannot reach a container's internal address).
+ */
+export type PreviewResolver = (sessionId: string, port: number) => Promise<{ port: number; connect(): Duplex }>
 
 /** Token registry and proxy handler. */
 export class PreviewProxy {
@@ -83,7 +90,7 @@ export class PreviewProxy {
       fail(res, 404, 'Preview link not found or expired. Open the preview again from the Code session.')
       return
     }
-    let target: { host: string; port: number }
+    let target: { port: number; connect(): Duplex }
     try {
       target = await this.resolve(grant.sessionId, grant.port)
     } catch (error) {
@@ -98,7 +105,9 @@ export class PreviewProxy {
     headers.host = `localhost:${target.port}`
     headers['x-forwarded-prefix'] = base
     const upstream = httpRequest({
-      host: target.host, port: target.port, method: req.method, path: `${match[2] ?? '/'}${url.search}`, headers,
+      host: 'localhost', port: target.port, method: req.method, path: `${match[2] ?? '/'}${url.search}`, headers,
+      // createConnection with no agent: Node then uses this stream instead of dialing host:port itself.
+      createConnection: () => target.connect() as never,
     }, (answer) => {
       const out: Record<string, string | string[]> = {}
       for (const [key, value] of Object.entries(answer.headers)) {
@@ -113,7 +122,7 @@ export class PreviewProxy {
     upstream.setTimeout(60_000, () => { upstream.destroy(new Error('preview timed out')) })
     upstream.on('error', (error) => {
       if (res.headersSent) res.destroy(error)
-      else fail(res, 502, `Preview unavailable: ${error.message}. Is the app listening on 0.0.0.0:${grant.port} in the workspace?`)
+      else fail(res, 502, `Preview unavailable: ${error.message}. Is the app listening on port ${grant.port} in the workspace?`)
     })
     req.pipe(upstream)
   }
@@ -158,4 +167,17 @@ export function rewriteLocation(location: string, base: string, port: number): s
 function fail(res: ServerResponse, status: number, message: string): void {
   res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', ...securityHeaders() })
   res.end(message)
+}
+
+/**
+ * Turn `docker` relay arguments into a connection for {@link PreviewResolver}.
+ * @param argv - argv after `docker` (see WorkspaceManager.previewRelayArgv).
+ * @returns a duplex over the exec's stdin/stdout; closing it ends the exec.
+ */
+export function relayConnection(argv: readonly string[]): Duplex {
+  const child = spawn('docker', [...argv], { stdio: ['pipe', 'pipe', 'ignore'] })
+  const stream = Duplex.from({ readable: child.stdout, writable: child.stdin })
+  stream.on('close', () => { child.kill() })
+  child.on('error', (error) => { stream.destroy(error) })
+  return stream
 }

@@ -4,6 +4,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { request } from 'node:http'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -11,6 +12,7 @@ import { DockerCli } from '../../src/core/docker.ts'
 import { WorkspaceManager, type WorkspaceRecord } from '../../src/core/workspaces.ts'
 import { DEFAULT_ALLOW, type EgressPolicy } from '../../src/egress/policy.ts'
 import { supervisedArgv } from '../../src/host/subprocess-docker.ts'
+import { relayConnection } from '../../src/host/preview.ts'
 import { FsHelperClient } from '../../src/host/fs-helper-client.ts'
 import { FS_HELPER_PATH } from '../../src/host/fs-container.ts'
 
@@ -118,13 +120,23 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     expect(seen.has('workspace\n')).toBe(true)
   }, 180_000)
 
-  it('reports resource usage and declared preview addresses', async () => {
+  it('reports resource usage and serves a preview through the docker exec relay', async () => {
     const usage = await manager.usage('session-a')
     expect(usage).toMatchObject({ pidsLimit: 256 })
     expect(usage!.memoryBytes).toBeGreaterThan(0)
     expect(usage!.diskBytes).toBeGreaterThan(0)
-    expect((await manager.previewAddress('session-a', 8000)).host).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
-    await expect(manager.previewAddress('session-a', 22)).rejects.toThrowError(/preview port/i)
+    // A server bound to 127.0.0.1 only: reachable through the relay, with no route from the host into the container.
+    await docker.exec(['exec', '-d', a.containerName, 'python3', '-m', 'http.server', '8000', '--bind', '127.0.0.1', '--directory', '/tmp'])
+    await new Promise(r => setTimeout(r, 1500))
+    expect(await manager.listeningPorts('session-a')).toContainEqual({ port: 8000, localOnly: true })
+    const argv = await manager.previewRelayArgv('session-a', 8000)
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request({ host: 'localhost', port: 8000, path: '/', createConnection: () => relayConnection(argv) as never }, (res) => { res.resume(); resolve(res.statusCode ?? 0) })
+      req.on('error', reject)
+      req.end()
+    })
+    expect(status).toBe(200)
+    await expect(manager.previewRelayArgv('session-a', 22)).rejects.toThrowError(/preview port/i)
   }, 60_000)
 
   it('refuses a destination as soon as the policy no longer allows it', async () => {

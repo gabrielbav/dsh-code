@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createServer, request, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { connect, type AddressInfo } from 'node:net'
 import { PREVIEW_CSP, PreviewProxy, rewriteLocation } from '../src/host/preview.ts'
 
 function get(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
@@ -23,7 +23,7 @@ describe('preview proxy', () => {
   let now = 1_000
   const proxy = new PreviewProxy(async (sessionId, port) => {
     if (sessionId !== 's1') throw new Error('no such workspace')
-    return { host: '127.0.0.1', port }
+    return { port, connect: () => connect(port, '127.0.0.1') }
   }, () => now)
   let upstreamPort = 0
   let frontPort = 0
