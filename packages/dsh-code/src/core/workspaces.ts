@@ -361,6 +361,7 @@ export class WorkspaceManager {
     onProgress('checking-runtime')
     const runtimes = await this.docker.runtimes()
     if (!runtimes.includes(REQUIRED_RUNTIME)) throw new WorkspaceError('gvisor-unavailable', 'Docker has no runsc runtime; Code execution is blocked')
+    onProgress('egress-proxy')
     await this.ensureNetwork()
     const workspaceId = this.records.get(sessionId)?.workspaceId ?? randomUUID()
     const path = join(this.config.dataDir, 'workspaces', workspaceId)
@@ -418,10 +419,10 @@ export class WorkspaceManager {
    * @param sessionId - logical session id.
    * @returns the ready record.
    */
-  restart(sessionId: string): Promise<WorkspaceRecord> {
+  restart(sessionId: string, onProgress?: (step: string) => void): Promise<WorkspaceRecord> {
     const record = this.records.get(sessionId)
     if (record === undefined) return Promise.reject(new WorkspaceError('not-found', `no workspace for session ${sessionId}`))
-    return this.provision(sessionId, record.repository, record.baseBranch, undefined, record.account)
+    return this.provision(sessionId, record.repository, record.baseBranch, onProgress, record.account)
   }
 
   /**

@@ -207,6 +207,23 @@ function register(ctx: Context): void {
     }).catch(() => undefined)
   }), 'dsh-code: Code mode moves into the Code Workspace')
 
+  /** @returns undefined when the session is gone, else why it could not be removed. */
+  const removeSession = async (sessionId: string): Promise<string | undefined> => {
+    const connection = (() => {
+      try { return ctx.get('connection' as never) as { rpc?: { call(channel: string, method: string, payload: unknown): Promise<Result<unknown>> } } | undefined } catch { return undefined }
+    })()
+    const permanent = await connection?.rpc?.call('/api', 'sessionDelete.deleteSession', { sessionId }).catch(() => undefined)
+    if (permanent?.ok === true) return undefined
+    try {
+      const ws = ctx.get('uiWorkspace' as never) as { archiveSession(id: string, options?: { readonly stopActivity?: boolean }): Promise<void> } | undefined
+      if (ws === undefined) return t('delete.sessionUnavailable')
+      await ws.archiveSession(sessionId, { stopActivity: true })
+      return undefined
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+
   const selectFor = async (sessionId: string, repository: string, branch: string | null, account: string | null = null): Promise<Outcome<CodeSessionView>> => {
     const result = outcome(await api().select(sessionId, repository, branch, account))
     if (result.ok) {
@@ -336,10 +353,14 @@ function register(ctx: Context): void {
         if (result.ok) viewOf(sessionId).set(result.value)
         return result
       },
+      // Delete removes the workspace, then the session: permanently through the session-delete plugin when
+      // it is installed, otherwise by archiving it (the Harness's own removal; its history stays recoverable).
       remove: async () => {
         const result = outcome(await api().deleteWorkspace(sessionId))
-        if (result.ok) void refresh()
-        return result
+        if (!result.ok) return result
+        void refresh()
+        const removal = await removeSession(sessionId)
+        return removal === undefined ? result : { ok: false, message: removal } as const
       },
       usage: async () => outcome(await api().usage(sessionId)),
       previewPorts: async () => {

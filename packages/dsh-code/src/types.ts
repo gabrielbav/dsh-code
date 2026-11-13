@@ -75,6 +75,15 @@ export interface AccountRepositories {
   readonly error?: string
 }
 
+/** One recorded provisioning step of a Code workspace. */
+export interface ProvisionStep {
+  /** Step id: held, checking-runtime, egress-proxy, resolving-revision, cloning, starting-container, health-check, working-directory, ready, failed. */
+  readonly step: string
+  /** Epoch milliseconds when the step started. */
+  readonly time: number
+  readonly error?: string
+}
+
 /** What the Environment tab shows about where a session runs. */
 export interface SessionEnvironment {
   /** `code`: an isolated gVisor workspace; `host`: directly on this computer. */
@@ -86,6 +95,8 @@ export interface SessionEnvironment {
   readonly baseCommit?: string
   readonly workingBranch?: string
   readonly status?: string
+  /** Provisioning steps of the latest start, oldest first. */
+  readonly steps?: readonly ProvisionStep[]
   readonly container?: {
     readonly name: string
     readonly image: string

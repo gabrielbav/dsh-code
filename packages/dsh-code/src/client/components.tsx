@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Button, Input, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, ProvisionStep, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -303,6 +303,13 @@ export function EnvironmentView({ useView, usePresetIds, load, t }: InjectFace<E
     })
     return () => { live = false }
   }, [load, view?.status, view?.repository, view?.baseBranch, view?.account, presets])
+  // While a workspace starts, its steps change without a status change; reload until it settles.
+  const settling = env?.steps !== undefined && env.steps.length > 0 && !['ready', 'failed'].includes(env.steps[env.steps.length - 1]!.step)
+  useEffect(() => {
+    if (!settling) return
+    const timer = setInterval(() => { void load().then((r) => { if (r.ok) setEnv(r.value) }) }, 1000)
+    return () => { clearInterval(timer) }
+  }, [settling, load])
   if (error !== null) return <div style={{ ...note, padding: 16 }} role="alert">{t('error.generic', { error })}</div>
   if (env === null) return <div style={{ ...note, padding: 16 }}>{t('picker.loading')}</div>
   const rows: [string, string | undefined][] = env.mode === 'host'
@@ -332,7 +339,34 @@ export function EnvironmentView({ useView, usePresetIds, load, t }: InjectFace<E
           </div>
         ))}
       </dl>
+      {env.steps !== undefined && env.steps.length > 0 && <ProvisionSteps steps={env.steps} t={t} />}
     </div>
+  )
+}
+
+/** The latest provisioning, one row per step with its offset and duration. */
+function ProvisionSteps({ steps, t }: { readonly steps: readonly ProvisionStep[]; readonly t: T }): ReactNode {
+  const start = steps[0]!.time
+  const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`
+  return (
+    <section style={{ marginTop: 20 }}>
+      <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('env.steps', { when: new Date(start).toLocaleString() })}</h3>
+      <ol style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4, fontSize: 13 }}>
+        {steps.map((s, i) => {
+          const next = steps[i + 1]
+          const last = next === undefined
+          return (
+            <li key={`${s.step}-${s.time}`} style={s.step === 'failed' ? { color: 'var(--dsw-alias-text-danger, #c0392b)' } : undefined}>
+              <span style={{ ...term, display: 'inline-block', minWidth: 52 }}>+{seconds(s.time - start)}</span>
+              {t(`step.${s.step}` as never) === `step.${s.step}` ? s.step : t(`step.${s.step}` as never)}
+              {next !== undefined && <span style={term}>{` · ${seconds(next.time - s.time)}`}</span>}
+              {last && s.step !== 'ready' && s.step !== 'failed' && <span style={term}>{` · ${t('step.running')}`}</span>}
+              {s.error !== undefined && <div style={{ ...value, fontSize: 12 }}>{s.error}</div>}
+            </li>
+          )
+        })}
+      </ol>
+    </section>
   )
 }
 

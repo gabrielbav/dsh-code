@@ -8,7 +8,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
-import { mkdir, realpath } from 'node:fs/promises'
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { mkdirSync, realpathSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
@@ -20,7 +20,7 @@ import type {} from '@deepseek-ai/dsh-working-directory'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { WorkspaceError, WorkspaceManager, type WorkspaceRecord } from '../core/workspaces.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { AccountRepositories, BranchList, GhAccount, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, BranchList, GhAccount, ProvisionStep, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
 import { PREVIEW_PREFIX, PreviewProxy } from './preview.ts'
 import { Git, gitRunner } from '../core/git.ts'
@@ -147,6 +147,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
   readonly manager: WorkspaceManager
   private readonly github = new GitHubProvider()
   private readonly selections = new Map<string, Selection>()
+  /** Steps of each session's latest provisioning, also saved under dataDir/steps for the Environment tab. */
+  private readonly steps = new Map<string, ProvisionStep[]>()
   private selfTestReport: Promise<SelfTestReport> | undefined
 
   private readonly previews: PreviewProxy
@@ -207,20 +209,53 @@ export class CodeWorkspacesService extends TypertRemoteService {
     const needsWork = selection !== undefined && record === undefined
       || record !== undefined && (record.status === 'offline' || record.status === 'failed')
     if (!needsWork) return
+    const step = (name: string, error?: string): void => { this.recordStep(sessionId, name, error) }
     try {
       void agent.runMaintenance(async (signal) => {
+        this.steps.set(sessionId, [])
+        step('held')
         await Promise.resolve()
         if (signal.aborted) return
         const ready = record === undefined
-          ? await this.manager.provision(sessionId, selection!.repository, selection!.baseBranch, undefined, selection!.account)
-          : await this.manager.restart(sessionId)
+          ? await this.manager.provision(sessionId, selection!.repository, selection!.baseBranch, name => { step(name) }, selection!.account)
+          : await this.manager.restart(sessionId, name => { step(name) })
+        step('working-directory')
         await this.ctx.workingDirectory.set(agent, ready.path, signal)
         this.selections.delete(sessionId)
-      }).catch((error: unknown) => { this.ctx.logger('dsh-code').warn('provisioning %s failed: %s', sessionId, String(error)) })
+        step('ready')
+      }).catch((error: unknown) => {
+        step('failed', error instanceof Error ? error.message : String(error))
+        this.ctx.logger('dsh-code').warn('provisioning %s failed: %s', sessionId, String(error))
+      })
     } catch (error) {
       // A turn or maintenance already owns the Agent; the message proceeds and
       // the preset's providers refuse to run outside a ready workspace.
       this.ctx.logger('dsh-code').debug('hold skipped for %s: %s', sessionId, String(error))
+    }
+  }
+
+  private stepsPath(sessionId: string): string {
+    return join(this.config.dataDir, 'steps', `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`)
+  }
+
+  private recordStep(sessionId: string, name: string, error?: string): void {
+    const list = this.steps.get(sessionId) ?? []
+    list.push({ step: name, time: Date.now(), ...error === undefined ? {} : { error } })
+    this.steps.set(sessionId, list)
+    const path = this.stepsPath(sessionId)
+    void mkdir(join(this.config.dataDir, 'steps'), { recursive: true })
+      .then(() => writeFile(path, JSON.stringify(list), { mode: 0o600 }))
+      .catch((failure: unknown) => { this.ctx.logger('dsh-code').debug('saving steps of %s failed: %s', sessionId, String(failure)) })
+  }
+
+  private async stepsOf(sessionId: string): Promise<ProvisionStep[] | undefined> {
+    const live = this.steps.get(sessionId)
+    if (live !== undefined) return live
+    try {
+      return JSON.parse(await readFile(this.stepsPath(sessionId), 'utf8')) as ProvisionStep[]
+    } catch {
+      // No provisioning recorded for this session yet.
+      return undefined
     }
   }
 
@@ -251,8 +286,10 @@ export class CodeWorkspacesService extends TypertRemoteService {
     }
     const account = this.accountOf(sessionId)
     const login = account !== '' ? account : (await this.github.accounts().catch(() => [])).find(a => a.active)?.login
+    const steps = await this.stepsOf(sessionId)
     return {
       mode: 'code',
+      ...steps === undefined ? {} : { steps },
       ...workingDirectory === undefined ? {} : { workingDirectory },
       ...login === undefined ? {} : { account: login },
       ...record !== undefined
@@ -629,7 +666,9 @@ export class CodeWorkspacesService extends TypertRemoteService {
   @Remote
   async restart(sessionId: string): Promise<CodeSessionView> {
     try {
-      const record = await this.manager.restart(sessionId)
+      this.steps.set(sessionId, [])
+      const record = await this.manager.restart(sessionId, (name) => { this.recordStep(sessionId, name) })
+      this.recordStep(sessionId, 'ready')
       return view(sessionId, record, undefined)!
     } catch (error) {
       throw remoteFailure(error)
