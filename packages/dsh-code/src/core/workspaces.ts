@@ -641,9 +641,11 @@ export class WorkspaceManager {
    * @returns argv after `docker`.
    */
   execArgv(record: WorkspaceRecord, argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>, tty: boolean): string[] {
-    if (record.status !== 'ready') throw new WorkspaceError('unsafe-state', `workspace is ${record.status}`)
+    // A sandbox problem is reported as one, never as the command's own failure.
+    if (record.status === 'offline') throw new WorkspaceError('unsafe-state', '[sandbox: the Code workspace is offline] its container stopped; it restarts with the next message (or use Restart in the Environment tab)')
+    if (record.status !== 'ready') throw new WorkspaceError('unsafe-state', `[sandbox: the Code workspace is ${record.status}] wait until it is ready`)
     const target = resolve(cwd)
-    if (target !== record.path && !target.startsWith(`${record.path}/`)) throw new WorkspaceError('unsafe-state', `cwd outside the session workspace: ${cwd}`)
+    if (target !== record.path && !target.startsWith(`${record.path}/`)) throw new WorkspaceError('unsafe-state', `[sandbox: access denied outside the Code workspace] cwd ${cwd} is outside the session checkout`)
     return execArgs(record.containerName, argv, target, env, tty)
   }
 
@@ -731,6 +733,25 @@ export class WorkspaceManager {
     const record = this.records.get(sessionId)
     if (record === undefined) throw new WorkspaceError('not-found', `no workspace for session ${sessionId}`)
     return record
+  }
+
+  /**
+   * Mark ready workspaces whose container stopped (VM restart, out of memory, Docker restarted) as offline, so
+   * commands report a sandbox problem and the next message restarts the workspace.
+   * @returns session ids that went offline.
+   */
+  async checkHealth(): Promise<string[]> {
+    const offline: string[] = []
+    for (const record of this.records.values()) {
+      if (record.status !== 'ready') continue
+      const info = await this.docker.inspect(record.containerName).catch(() => 'unknown' as const)
+      if (info === 'unknown') continue
+      if (info === undefined || !info.running) {
+        await this.setStatus(record, 'offline')
+        offline.push(record.sessionId)
+      }
+    }
+    return offline
   }
 
   private async setStatus(record: WorkspaceRecord, status: WorkspaceStatus): Promise<void> {

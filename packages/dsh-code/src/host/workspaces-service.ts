@@ -278,6 +278,14 @@ export class CodeWorkspacesService extends TypertRemoteService {
     const removals = ctx as unknown as { on(name: 'api-session/removed', listener: (sessionId: string) => void): () => void }
     ctx.effect(() => removals.on('api-session/removed', (sessionId) => { void this.collect([String(sessionId)]) }), 'dsh-code: delete workspace of a deleted session')
     ctx.effect(() => {
+      const timer = setInterval(() => {
+        void this.manager.checkHealth().then((ids) => {
+          for (const id of ids) this.ctx.logger('dsh-code').warn('workspace of %s went offline: its container stopped', id)
+        }).catch(() => undefined)
+      }, 10_000)
+      return () => { clearInterval(timer) }
+    }, 'dsh-code: notice stopped workspace containers')
+    ctx.effect(() => {
       const first = setTimeout(() => { void this.collect() }, 30_000)
       const every = setInterval(() => { void this.collect() }, 5 * 60_000)
       return () => { clearTimeout(first); clearInterval(every) }

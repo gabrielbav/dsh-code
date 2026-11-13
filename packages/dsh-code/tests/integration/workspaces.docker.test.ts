@@ -212,4 +212,10 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     expect(existsSync(b.mirrorPath)).toBe(false)
     expect(readFileSync(join(origin, 'HEAD'), 'utf8')).toContain('main')
   }, 90_000)
+
+  it('marks a workspace offline when its container stops and says so instead of failing the command', async () => {
+    await docker.exec(['stop', '-t', '1', a.containerName])
+    expect(await manager.checkHealth()).toContain('session-a')
+    expect(() => manager.execArgv(manager.get('session-a')!, ['true'], a.path, {}, false)).toThrowError(/\[sandbox: the Code workspace is offline\]/)
+  }, 60_000)
 })
