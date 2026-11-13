@@ -53,6 +53,15 @@ export interface EgressProxy {
   close(): Promise<void>
 }
 
+/**
+ * The refusal body. Only a host missing from the allowlist can be approved one by one, so only then does it point
+ * to request_network_access (network off, direct IPs, ports and private addresses cannot be).
+ */
+function denial(host: string, reason: string): string {
+  const hint = reason.endsWith('is not an approved destination') ? ' The agent can ask the user with the request_network_access tool.' : ''
+  return `[sandbox: network access to ${host} denied by the Code egress policy] ${reason}.${hint}\n`
+}
+
 async function admit(options: ProxyOptions, host: string, port: number, client: string | undefined): Promise<{ decision: Decision; address?: string }> {
   const policy = policyForClient(options.policy(), client)
   const first = decideRequest(policy, host, port)
@@ -104,7 +113,7 @@ export function createEgressProxy(options: ProxyOptions): EgressProxy {
     void admit(options, url.hostname, port, req.socket.remoteAddress).then(({ decision, address }) => {
       log({ kind: 'http', host: url.hostname, port, allowed: decision.allowed, reason: decision.allowed ? undefined : decision.reason, address })
       if (!decision.allowed) {
-        res.writeHead(403, { 'content-type': 'text/plain' }).end(`[sandbox: network access to ${url.hostname} denied by the Code egress policy] ${decision.reason}. The agent can ask the user with the request_network_access tool.\n`)
+        res.writeHead(403, { 'content-type': 'text/plain' }).end(denial(url.hostname, decision.reason))
         return
       }
       const headers: Record<string, string | string[] | undefined> = { ...req.headers, host: url.host }
@@ -133,7 +142,7 @@ export function createEgressProxy(options: ProxyOptions): EgressProxy {
     void admit(options, target.host, target.port, client.remoteAddress).then(({ decision, address }) => {
       log({ kind: 'connect', host: target.host, port: target.port, allowed: decision.allowed, reason: decision.allowed ? undefined : decision.reason, address })
       if (!decision.allowed || address === undefined) {
-        client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n[sandbox: network access to ${target.host} denied by the Code egress policy] ${decision.allowed ? 'no address' : decision.reason}. The agent can ask the user with the request_network_access tool.\n`)
+        client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${denial(target.host, decision.allowed ? 'no address' : decision.reason)}`)
         return
       }
       const upstream = connect({ host: address, port: target.port })

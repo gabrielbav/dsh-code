@@ -163,6 +163,9 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     // Session a passes the policy (200 with internet; a network error without, never the proxy's 403).
     expect(await manager.runInside(a, ['sh', '-c', 'curl -s -o /dev/null -w "%{http_code}" --max-time 15 http://example.org/ || true'])).not.toBe('403')
     expect(await manager.runInside(b, ['sh', '-c', 'curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://example.org/'])).toBe('403')
+    // HTTPS goes through CONNECT: clients show only the status, which the persona and the tool description name.
+    expect(await manager.runInside(b, ['sh', '-c', 'curl -sS --max-time 10 https://example.org/ 2>&1 || true'])).toContain('CONNECT tunnel failed, response 403')
+    expect(await manager.runInside(a, ['sh', '-c', 'curl -sS -o /dev/null --max-time 15 https://example.org/ 2>&1 || true'])).not.toContain('response 403')
     await manager.setNetworkGrants('session-a', [])
     await new Promise(r => setTimeout(r, 2500))
     expect(await manager.runInside(a, ['sh', '-c', 'curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://example.org/'])).toBe('403')

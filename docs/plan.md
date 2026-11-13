@@ -25,6 +25,8 @@ Status of [spec.md](spec.md) as implemented in this repository, and the open wor
 | Cleanup of workspaces whose session was deleted outright (event + sweep) | `CodeWorkspacesService.collect` | real app (5 containers, 7 checkouts removed) |
 | Harness permission selector honored (read-only mounts the checkout read-only; full access stays in the sandbox) | `CodeWorkspacesService.harnessMode`, `sandbox/mode` listener | unit tests |
 | Per-session host approval: `request_network_access`, Harness approval card, grants keyed by container address, Approved hosts in the Environment tab | `src/host/network-tool.ts`, `policyForClient`, `WorkspaceManager.grantNetwork` | unit tests; live test (granted to one session, refused to the other, revoked) |
+| Egress proxy recreated when its code changes (version label), checked at startup | `WorkspaceManager.ensureNetwork`, `proxyCodeHash` | real boot (old proxy replaced) |
+| `cordis.patch.yml` parses and names only exported entries | `tests/patch-file.test.ts` | unit test; caught an unquoted `: ` in the persona that made the preset fail to install |
 | Offline detection and `[sandbox: ...]` messages | `WorkspaceManager.checkHealth`, `execArgv`, `fs-container.ts`, proxy 403 | live test |
 | Real exit codes (`setsid --wait`) | `src/host/subprocess-docker.ts` | live test |
 | First message held until provisioned; working directory moved into the checkout | `CodeWorkspacesService.hold` | real Web app run |

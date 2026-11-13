@@ -10,14 +10,15 @@ function harness(policy: Partial<EgressPolicy> = {}, answer: Awaited<ReturnType<
     config: { policy: { mode: 'allowlist', allow: ['github.com'], privateAllow: [], ports: [80, 443], ...policy } as EgressPolicy },
     networkGrants: () => grants,
     grantNetwork: async (_s: string, host: string) => { granted.push(host); grants.push(host) },
-    get: (id: string) => (id === 's1' ? {} : undefined),
+    get: (id: string) => (id === 's1' ? { sessionId: 's1' } : undefined),
+    owning: (path: string) => (path.startsWith('/work/s1') ? { sessionId: 's1' } : undefined),
   } as unknown as NetworkRequestInput['manager']
   const approver: Approver = {
     policyOf: () => ask,
     request: async (req) => { asked.push(req.displayReason?.en ?? ''); return answer },
   }
-  const run = (host: string, sessionId = 's1', withApprover = true) => requestNetworkAccess({
-    manager, approver: withApprover ? approver : undefined, agent: { id: sessionId, session: {} }, host, reason: 'install a package',
+  const run = (host: string, sessionId = 's1', withApprover = true, workingDirectory?: string, reason = 'install a package') => requestNetworkAccess({
+    manager, approver: withApprover ? approver : undefined, agent: { id: sessionId, session: {} }, host, reason, workingDirectory,
   })
   return { run, granted, asked }
 }
@@ -45,6 +46,15 @@ describe('request_network_access', () => {
     const missing = harness()
     expect((await missing.run('evil.example', 's1', false)).outcome).toBe('not-asked')
     expect(missing.granted).toEqual([])
+  })
+
+  it('grants a subagent request to the session whose checkout it works in, with a one-line reason', async () => {
+    const h = harness()
+    expect((await h.run('registry.example.com', 'child-1', true, '/work/s1/src', `line one\n${'x'.repeat(500)}`)).outcome).toBe('granted')
+    expect(h.granted).toEqual(['registry.example.com'])
+    expect(h.asked[0]).not.toContain('\n')
+    expect(h.asked[0]!.length).toBeLessThan(330)
+    expect((await h.run('other.example.com', 'child-2', true, '/elsewhere')).outcome).toBe('no-workspace')
   })
 
   it('refuses IPs, invalid names, network off and sessions without a workspace', async () => {

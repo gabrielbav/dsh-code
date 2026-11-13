@@ -118,6 +118,16 @@ describe('egress proxy', () => {
     expect(other.split('\r\n')[0]).toBe('HTTP/1.1 403 Forbidden')
     expect(other).toContain('[sandbox: network access to granted.test denied by the Code egress policy]')
     expect(other).toContain('request_network_access')
+    // Only a host missing from the allowlist points to the tool; a direct IP cannot be approved that way.
+    const ip = await new Promise<string>((resolve, reject) => {
+      const socket = connect(ctx.proxyPort, '127.0.0.1', () => { socket.write('CONNECT 93.184.216.34:443 HTTP/1.1\r\nHost: 93.184.216.34:443\r\n\r\n') })
+      let data = ''
+      socket.on('data', (c) => { data += c.toString() })
+      socket.on('close', () => { resolve(data) })
+      socket.on('error', reject)
+    })
+    expect(ip).toContain('direct IP destinations are blocked')
+    expect(ip).not.toContain('request_network_access')
     // The same grant keyed by this client's address admits it, up to the address check (no real connection here).
     ctx.setPolicy({ mode: 'allowlist', allow: [], privateAllow: [], ports: [443], clients: { '127.0.0.1': ['granted.test'] } })
     const mine = await connectThrough(ctx.proxyPort, 'granted.test:443')

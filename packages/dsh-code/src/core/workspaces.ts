@@ -8,7 +8,7 @@
 import { chown, constants, cp, lchown, mkdir, open, readFile, rm, writeFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { existsSync, statSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { DockerCli } from './docker.ts'
 import { createArgs, execArgs, OWNER_LABEL, REQUIRED_RUNTIME, SESSION_LABEL, type ResourceLimits } from './container-spec.ts'
 import { unsafeFolderReason } from './mounts.ts'
@@ -142,6 +142,24 @@ export class WorkspaceError extends Error {
 /** Default namespace; its owner label value stays `1` so earlier installs keep their containers. */
 export const DEFAULT_NAMESPACE = 'dsh-code'
 export const PROXY_PORT = 3128
+/** Label on the proxy container: a hash of the code it runs. */
+export const PROXY_VERSION_LABEL = 'dsh-code.proxy-version'
+
+/**
+ * Hash the proxy's code as copied into the data directory.
+ * @param dir - the proxy source folder.
+ * @returns a short hex digest of every file's name and contents.
+ */
+export async function proxyCodeHash(dir: string): Promise<string> {
+  const hash = createHash('sha256')
+  for (const file of (await readdir(dir, { recursive: true })).map(String).sort()) {
+    const path = join(dir, file)
+    if (!statSync(path).isFile()) continue
+    hash.update(file).update('\0').update(await readFile(path)).update('\0')
+  }
+  return hash.digest('hex').slice(0, 16)
+}
+
 /** The proxy polls policy.json every second; waiting this long guarantees a reload. */
 export const POLICY_RELOAD_MS = 1500
 
@@ -278,6 +296,10 @@ export class WorkspaceManager {
       const record = JSON.parse(await readFile(join(this.recordsDir, file), 'utf8')) as WorkspaceRecord
       if (record.status !== 'deleted') this.records.set(record.sessionId, record)
     }
+    // Bring an existing proxy up to the shipped code now, not at the next new workspace.
+    if (await this.docker.inspect(this.proxyContainer) !== undefined) {
+      await this.ensureNetwork().catch((error: unknown) => { console.warn(`dsh-code: egress proxy refresh failed: ${String(error)}`) })
+    }
     const orphansRemoved: string[] = []
     for (const id of await this.docker.containersWithLabel(`${OWNER_LABEL}=${this.owner}`)) {
       if (id === this.proxyContainer) continue
@@ -314,15 +336,19 @@ export class WorkspaceManager {
     await writeFile(this.policyPath, JSON.stringify(this.composedPolicy()), { mode: 0o644 })
     await this.docker.ensureNetwork(this.internalNetwork, ['--internal', '--driver', 'bridge', '--label', `${OWNER_LABEL}=${this.owner}`])
     await this.docker.ensureNetwork(this.egressNetwork, ['--driver', 'bridge', '--label', `${OWNER_LABEL}=${this.owner}`])
+    // A running proxy keeps the code it started with; recreate it when the shipped code changed (an upgrade).
+    const version = await proxyCodeHash(this.proxySourceDir)
     const info = await this.docker.inspect(this.proxyContainer)
-    if (info?.running === true) return
+    if (info?.running === true && info.labels[PROXY_VERSION_LABEL] === version) return
+    const before = info?.running === true ? await this.proxyAddress().catch(() => undefined) : undefined
     if (info !== undefined) await this.docker.removeContainer(this.proxyContainer)
     await this.docker.exec([
       // The proxy is dsh-code's own trusted code, not workspace code. It runs
       // under the default runtime because it must resolve names through the
       // daemon's resolver, which gVisor's network stack cannot reach.
       'create', '--name', this.proxyContainer,
-      '--label', `${OWNER_LABEL}=${this.owner}`, '--user', '65534:65534', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+      '--label', `${OWNER_LABEL}=${this.owner}`, '--label', `${PROXY_VERSION_LABEL}=${version}`,
+      '--user', '65534:65534', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
       '--read-only', '--pids-limit', '256', '--memory', '256m', '--restart', 'unless-stopped',
       '--network', this.egressNetwork,
       '--mount', `type=bind,source=${this.proxySourceDir},target=/opt/egress/src,readonly`,
@@ -331,6 +357,11 @@ export class WorkspaceManager {
     ])
     await this.docker.exec(['network', 'connect', '--alias', this.proxyContainer, this.internalNetwork, this.proxyContainer])
     await this.docker.exec(['start', this.proxyContainer])
+    // Workspaces have no DNS and reach the proxy at the address written into them at creation. If the new proxy got
+    // another address, running workspaces cannot reach it: mark them offline so their next message restarts them.
+    if (before !== undefined && before !== await this.proxyAddress().catch(() => undefined)) {
+      for (const record of this.records.values()) if (record.status === 'ready') await this.setStatus(record, 'offline')
+    }
   }
 
   private async proxyAddress(): Promise<string> {
