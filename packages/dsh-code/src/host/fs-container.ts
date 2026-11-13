@@ -69,7 +69,7 @@ export class ContainerFileSystem extends FileSystem {
 
   private recordFor(path: string): WorkspaceRecord {
     const record = this.workspaces.owning(path)
-    if (record === undefined) throw new FsError(`cannot access "${path}": Code sessions may only use files inside their own workspace`, 'FS_SANDBOX_DENIED')
+    if (record === undefined) throw new FsError(`[sandbox: file access denied outside the Code workspace] cannot access "${path}": Code sessions may only use files inside their own workspace`, 'FS_SANDBOX_DENIED')
     if (record.status !== 'ready') throw new FsError(`the Code workspace is ${record.status}; restart it from the session header`, 'FS_IO_ERROR')
     return record
   }
@@ -89,8 +89,17 @@ export class ContainerFileSystem extends FileSystem {
 
   private async call(path: string, body: Parameters<FsHelperClient['call']>[0], signal?: AbortSignal, chunk?: (text: string) => void): Promise<{ value: unknown; root: string }> {
     const record = this.recordFor(path)
-    const value = await this.helper(record).call(body, signal, chunk)
-    return { value, root: record.path }
+    try {
+      const value = await this.helper(record).call(body, signal, chunk)
+      return { value, root: record.path }
+    } catch (error) {
+      // A read-only workspace (permission selector, Settings or Lockdown) answers writes with EROFS; say it in the
+      // Harness's sandbox dialect so the model knows this is policy, not a broken file.
+      if (error instanceof Error && /EROFS|read-only file system/i.test(error.message)) {
+        throw new FsError(`[sandbox: file access denied under read-only mode] ${error.message}. The workspace is read-only; ask the user to switch the session's permission to Workspace Write.`, 'FS_SANDBOX_DENIED')
+      }
+      throw error
+    }
   }
 
   override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
@@ -98,7 +107,7 @@ export class ContainerFileSystem extends FileSystem {
     // A relative path resolves against cwd; an absolute one must still lie in cwd's workspace.
     const record = this.recordFor(cwd)
     if (isAbsolute(path) && this.workspaces.owning(path) !== record) {
-      throw new FsError(`cannot access "${path}": outside the Code workspace`, 'FS_SANDBOX_DENIED')
+      throw new FsError(`[sandbox: file access denied outside the Code workspace] cannot access "${path}"`, 'FS_SANDBOX_DENIED')
     }
     const { value, root } = await this.call(cwd, { op: 'resolve', path, cwd }, opts?.signal)
     return checkTarget(value, root)

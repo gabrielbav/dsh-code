@@ -206,6 +206,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
       policy: { mode: config.lockdown ? 'none' : config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports },
       uid: config.uid, gid: config.gid, maxWorkspaces: config.maxWorkspaces, previewPorts: config.previewPorts, newBranch: config.newBranch,
       ...sandboxOptions(config),
+      sessionReadOnly: sessionId => this.harnessMode(sessionId) === 'read-only',
     }, undefined, new Git(gitRunner('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'])),
     async account => this.github.credentials(account))
     this.previews = new PreviewProxy(async (sessionId, port) => {
@@ -250,6 +251,22 @@ export class CodeWorkspacesService extends TypertRemoteService {
       if (agentPreset === config.presetId || this.manager.get(String(sessionId)) !== undefined) return
       this.selections.delete(String(sessionId))
     }), 'dsh-code: leaving Code mode clears choices')
+    // Switching the permission selector between read-only and workspace-write changes the checkout mount, which a
+    // running container cannot do: recreate the container (the checkout and branch stay) for the next command.
+    const sessionEvents = ctx as unknown as { on(name: 'session/event', listener: (session: { readonly id: unknown }, event: { readonly type: string }) => void): () => void }
+    ctx.effect(() => sessionEvents.on('session/event', (session, event) => {
+      if (event.type !== 'sandbox/mode') return
+      const sessionId = String(session.id)
+      const record = this.manager.get(sessionId)
+      if (record === undefined || record.status !== 'ready' || record.options === undefined) return
+      const wanted = this.config.lockdown || this.config.readOnlyWorkspace || this.harnessMode(sessionId) === 'read-only'
+      if (wanted === record.options.readOnlyWorkspace) return
+      this.steps.set(sessionId, [])
+      this.recordStep(sessionId, 'permission-changed')
+      void this.manager.restart(sessionId, (name) => { this.recordStep(sessionId, name) })
+        .then(() => { this.recordStep(sessionId, 'ready') })
+        .catch((error: unknown) => { this.recordStep(sessionId, 'failed', String(error)) })
+    }), 'dsh-code: follow the permission selector')
     ctx.effect(() => ctx.on('workspace/session-archived', ({ sessionId }) => {
       this.previews.revoke(sessionId)
       this.browsers.close(sessionId)
@@ -367,6 +384,22 @@ export class CodeWorkspacesService extends TypertRemoteService {
     }
   }
 
+  /**
+   * The session's mode in the Harness permission selector (`ctx.sandboxPolicy`), when the Harness has one.
+   * Code honors read-only and workspace-write; danger-full-access never leaves the container, so it acts as
+   * workspace-write in Code mode.
+   */
+  private harnessMode(sessionId: string): string | undefined {
+    try {
+      const agent = (this.ctx.get('agents' as never) as { get(id: string): Agent | undefined } | undefined)?.get(sessionId)
+      const policy = this.ctx.get('sandboxPolicy' as never) as { resolve(request: { session?: unknown }): { mode: string } } | undefined
+      return agent === undefined || policy === undefined ? undefined : policy.resolve({ session: agent.session }).mode
+    } catch {
+      // No policy service, or a session without a valid cwd: Code's own settings decide.
+      return undefined
+    }
+  }
+
   /** The account a session uses: its record, its selection, then the configured default. */
   private accountOf(sessionId: string | null): string {
     if (sessionId === null) return this.config.defaultAccount
@@ -405,9 +438,11 @@ export class CodeWorkspacesService extends TypertRemoteService {
       }
     // The host's folder layout, container name, runtime and image stay on the host: the tab shows what the
     // session works on and how it is fenced, not where things live.
+    const harness = this.harnessMode(sessionId)
     return {
       mode: 'code',
       options,
+      ...harness === undefined ? {} : { permission: harness },
       network: lockdown ? 'none' : this.config.network,
       ...steps === undefined ? {} : { steps },
       ...login === undefined ? {} : { account: login },

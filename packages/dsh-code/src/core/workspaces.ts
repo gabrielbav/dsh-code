@@ -114,6 +114,8 @@ export interface WorkspaceManagerConfig {
   shmMb?: number
   /** Forces a read-only workspace, no cache and no extra folders (network none is applied through the policy). */
   lockdown?: boolean
+  /** Whether the Harness sandbox mode of a session is read-only (its permission selector); read at container creation. */
+  sessionReadOnly?: (sessionId: string) => boolean
   /** Default variables for every workspace; a session's own values override them by name. */
   environment?: Readonly<Record<string, string>>
   /**
@@ -463,7 +465,7 @@ export class WorkspaceManager {
    * The options a new container gets now: Lockdown forces a read-only checkout, no cache and no extra folders.
    * Folders that are unsafe, missing, not directories or inside dataDir are skipped and reported, never fatal.
    */
-  private async optionsFor(repository: RepositoryRef, onProgress: (step: string, detail?: string) => void): Promise<WorkspaceOptions> {
+  private async optionsFor(repository: RepositoryRef, onProgress: (step: string, detail?: string) => void, sessionId: string): Promise<WorkspaceOptions> {
     const lockdown = this.config.lockdown === true
     const folders: string[] = []
     for (const folder of lockdown ? [] : this.config.readOnlyFolders ?? []) {
@@ -482,7 +484,7 @@ export class WorkspaceManager {
       if (process.getuid?.() === 0) await chown(cacheDir, this.config.uid, this.config.gid)
     }
     return {
-      readOnlyWorkspace: lockdown || this.config.readOnlyWorkspace === true, readOnlyFolders: folders,
+      readOnlyWorkspace: lockdown || this.config.readOnlyWorkspace === true || this.config.sessionReadOnly?.(sessionId) === true, readOnlyFolders: folders,
       shmMb: this.config.shmMb ?? 256, lockdown, ...cacheDir === undefined ? {} : { cacheDir },
     }
   }
@@ -592,7 +594,7 @@ export class WorkspaceManager {
       onProgress('starting-container')
       await this.docker.removeContainer(record.containerName)
       const proxyAddress = await this.proxyAddress()
-      const options = await this.optionsFor(record.repository, onProgress)
+      const options = await this.optionsFor(record.repository, onProgress, sessionId)
       record.options = options
       await this.save(record)
       await this.docker.exec(createArgs({

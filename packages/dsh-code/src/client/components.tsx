@@ -263,6 +263,7 @@ function EnvironmentPanel({ load, status, side, t }: { readonly load: () => Prom
       [t('env.baseCommit'), env.baseCommit?.slice(0, 12)],
       [t('env.workingBranch'), env.workingBranch],
       [t('env.status'), env.status],
+      [t('env.permission'), env.permission === undefined ? undefined : env.permission === 'read-only' ? t('env.permissionReadOnly') : env.permission === 'danger-full-access' ? t('env.permissionFullAccess') : t('env.permissionWrite')],
       [t('env.network'), env.network === undefined ? undefined : t('env.networkValue', { mode: env.network })],
       [t('env.sandbox'), sandbox],
     ]

@@ -105,6 +105,8 @@ export interface SessionEnvironment {
   }
   /** Provisioning steps of the latest start, oldest first. */
   readonly steps?: readonly ProvisionStep[]
+  /** The Harness permission selector's mode for this session (read-only, workspace-write, danger-full-access). */
+  readonly permission?: string
   /** Egress mode (allowlist, none or open); host layout details are never sent to the browser. */
   readonly network?: string
 }
