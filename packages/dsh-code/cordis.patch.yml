@@ -30,10 +30,6 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: You are a coding agent powered by the {{model}} model. You work in an isolated checkout of the user's repository on a dedicated branch; commands and file edits run inside that sandbox.
-          - id: agent-instructions
-            name: '@deepseek-ai/dsh-agent-instructions'
-            config:
-              maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
           - id: code-execution
@@ -60,14 +56,18 @@
                 name: '@deepseek-ai/dsh-tool-fs-search'
                 config:
                   sampleOverCapGlobResults: false
-          # Skill folders inside the checkout are read through the container
-          # fs; host-side watchers would follow sandbox-controlled links.
-          - id: skill-filesystem
-            name: '@deepseek-ai/dsh-skill-filesystem'
-            config:
-              watch: false
-          - id: tool-skill
-            name: '@deepseek-ai/dsh-tool-skill'
+              # Repository files that reach the prompt are read through the container fs too: on the host,
+              # a CLAUDE.md or skill symlinked to ~/.aws/credentials would put that host file in the prompt.
+              - id: agent-instructions
+                name: '@deepseek-ai/dsh-agent-instructions'
+                config:
+                  maxBytes: 65536
+              - id: skill-filesystem
+                name: '@deepseek-ai/dsh-skill-filesystem'
+                config:
+                  watch: false
+              - id: tool-skill
+                name: '@deepseek-ai/dsh-tool-skill'
           - id: command-goal
             name: '@deepseek-ai/dsh-command-goal'
           - id: tool-goal
