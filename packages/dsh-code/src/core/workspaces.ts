@@ -41,6 +41,33 @@ export interface WorkspaceRecord {
   updatedAt: string
 }
 
+/** One TCP port a workspace process listens on. */
+export interface ListeningPort {
+  readonly port: number
+  /** Bound to 127.0.0.1 or ::1 only, so the preview, which reaches the container over its network, cannot connect. */
+  readonly localOnly: boolean
+}
+
+/**
+ * Listening sockets from /proc/net/tcp and /proc/net/tcp6 text (state 0A).
+ * @param text - the concatenated files.
+ * @returns one entry per port; local-only when every socket on it is loopback-bound.
+ */
+export function parseListeningPorts(text: string): ListeningPort[] {
+  const ports = new Map<number, boolean>()
+  for (const line of text.split('\n')) {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length < 4 || fields[3] !== '0A') continue
+    const [address, hexPort] = (fields[1] ?? '').split(':')
+    const port = Number.parseInt(hexPort ?? '', 16)
+    if (!Number.isInteger(port) || port <= 0 || address === undefined) continue
+    // Little-endian hex: 127.x.x.x ends in 7F; ::1 is 0...01000000; ::ffff:127.x is 0000000000000000FFFF0000xx00007F.
+    const loopback = (address.length === 8 && address.endsWith('7F')) || address === '00000000000000000000000001000000' || /^0000000000000000FFFF0000[0-9A-F]{6}7F$/i.test(address)
+    ports.set(port, (ports.get(port) ?? true) && loopback)
+  }
+  return [...ports].map(([port, localOnly]) => ({ port, localOnly })).sort((a, b) => a.port - b.port)
+}
+
 /** Sandbox options applied when a workspace container is created. */
 export interface WorkspaceOptions {
   readonly readOnlyWorkspace: boolean
@@ -330,8 +357,21 @@ export class WorkspaceManager {
    * @param port - container port.
    * @returns host and port on the internal network.
    */
+  /**
+   * TCP ports a process in the workspace is listening on, read from /proc/net inside the container.
+   * @param sessionId - logical session id.
+   * @returns listening ports, each marked when it accepts only loopback connections.
+   */
+  async listeningPorts(sessionId: string): Promise<ListeningPort[]> {
+    const record = this.require(sessionId)
+    if (record.status !== 'ready') return []
+    const text = await this.runInside(record, ['sh', '-c', 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; true']).catch(() => '')
+    return parseListeningPorts(text)
+  }
+
   async previewAddress(sessionId: string, port: number): Promise<{ host: string; port: number }> {
-    if (!this.config.previewPorts.includes(port)) throw new WorkspaceError('unsafe-state', `port ${port} is not a declared preview port`)
+    // An empty list means no restriction: links are minted only for ports found listening (see previewUrl).
+    if (this.config.previewPorts.length > 0 && !this.config.previewPorts.includes(port)) throw new WorkspaceError('unsafe-state', `port ${port} is not in Settings > Code > Preview ports`)
     const record = this.require(sessionId)
     if (record.status !== 'ready') throw new WorkspaceError('unsafe-state', `workspace is ${record.status}`)
     const host = await this.docker.exec(['inspect', '--format', `{{(index .NetworkSettings.Networks "${this.internalNetwork}").IPAddress}}`, record.containerName])

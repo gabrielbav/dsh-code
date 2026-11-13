@@ -5,6 +5,11 @@ export const NS = 'dsh-code'
 
 export const en = {
   'dialog.title': 'Code mode',
+  'preview.nothingListening': 'Nothing in this workspace is listening on a port yet. Ask the agent to start the app on 0.0.0.0 (for example npm run dev -- --host 0.0.0.0, or python3 -m http.server 8000), then open Preview again.',
+  'preview.notRunning': 'not running',
+  'preview.localOnly': 'listens on 127.0.0.1 only; start it on 0.0.0.0',
+  'preview.notAllowed': 'not in Settings > Code > Preview ports',
+  'preview.restricted': 'Settings > Code > Preview ports limits previews to the ports listed there.',
   'settings.lockdown': 'Lockdown',
   'settings.lockdownHint': 'The strictest sandbox: no network, a read-only workspace, no dependency cache and no extra folders, whatever is set below.',
   'settings.lockdownActive': 'Lockdown is on: the network and workspace options below are overridden. Running workspaces pick it up when they restart; the network closes at once.',
@@ -152,7 +157,7 @@ export const en = {
   'settings.tmpMb': '/tmp size (MB)',
   'settings.maxWorkspaces': 'Workspaces per host',
   'settings.workerImage': 'Worker image',
-  'settings.previewPorts': 'Preview ports (comma separated)',
+  'settings.previewPorts': 'Preview ports (optional, comma separated; empty allows any port the app listens on)',
   'settings.save': 'Save',
   'settings.saved': 'Saved. Network changes apply now; /tmp size and image apply when a workspace restarts.',
   'settings.notWritable': 'This profile cannot be edited from here; changes last until Harness restarts.',
@@ -163,6 +168,11 @@ export type CodeKey = keyof typeof en
 
 export const zh: Record<CodeKey, string> = {
   'dialog.title': '代码模式',
+  'preview.nothingListening': '此工作区中还没有程序在监听端口。请让代理在 0.0.0.0 上启动应用（例如 npm run dev -- --host 0.0.0.0，或 python3 -m http.server 8000），然后重新打开“预览”。',
+  'preview.notRunning': '未运行',
+  'preview.localOnly': '仅监听 127.0.0.1；请改为在 0.0.0.0 上启动',
+  'preview.notAllowed': '不在“设置 > 代码 > 预览端口”中',
+  'preview.restricted': '“设置 > 代码 > 预览端口”将预览限制为其中列出的端口。',
   'settings.lockdown': '锁定模式',
   'settings.lockdownHint': '最严格的沙箱：无网络、只读工作区、无依赖缓存、无额外文件夹，忽略下方设置。',
   'settings.lockdownActive': '锁定模式已开启：下方的网络和工作区选项被覆盖。运行中的工作区在重启后生效；网络立即关闭。',
@@ -310,7 +320,7 @@ export const zh: Record<CodeKey, string> = {
   'settings.tmpMb': '/tmp 大小（MB）',
   'settings.maxWorkspaces': '每台主机的工作区数',
   'settings.workerImage': 'Worker 镜像',
-  'settings.previewPorts': '预览端口（逗号分隔）',
+  'settings.previewPorts': '预览端口（可选，逗号分隔；留空则允许应用监听的任何端口）',
   'settings.save': '保存',
   'settings.saved': '已保存。网络更改立即生效；/tmp 大小和镜像在工作区重启时生效。',
   'settings.notWritable': '无法在此编辑该配置文件；更改在 Harness 重启前有效。',

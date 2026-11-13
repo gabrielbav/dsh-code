@@ -167,3 +167,21 @@ export interface SessionVariables {
   readonly defaults: readonly string[]
   readonly session: readonly string[]
 }
+
+/** A port the Preview dialog can offer for one session. */
+export interface PreviewTarget {
+  readonly port: number
+  /** A process is listening on it now. */
+  readonly listening: boolean
+  /** Listening on loopback only: the app must listen on 0.0.0.0 to be previewed. */
+  readonly localOnly: boolean
+  /** Settings > Code > Preview ports allows it (always true when that list is empty). */
+  readonly allowed: boolean
+}
+
+/** What the Preview dialog shows. */
+export interface PreviewTargets {
+  readonly targets: readonly PreviewTarget[]
+  /** Settings > Code > Preview ports is not empty, so only those ports can be opened. */
+  readonly restricted: boolean
+}

@@ -11,7 +11,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { AccountRepositories, GhAccount, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, GhAccount, PreviewTargets, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CodeSettingsSection, EnvironmentTab, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
@@ -31,6 +31,7 @@ interface CodeRemote {
   branches(repository: string, sessionId: string | null): Promise<Result<BranchList>>
   repositoriesByAccount(): Promise<Result<AccountRepositories[]>>
   ghAccounts(): Promise<Result<GhAccount[]>>
+  previewTargets(sessionId: string): Promise<Result<PreviewTargets>>
   sessionVariables(sessionId: string): Promise<Result<SessionVariables>>
   setSessionVariables(sessionId: string, lines: string[]): Promise<Result<SessionVariables>>
   environment(sessionId: string): Promise<Result<SessionEnvironment>>
@@ -330,10 +331,7 @@ function register(ctx: Context): void {
         const removal = await removeSession(sessionId)
         return removal === undefined ? result : { ok: false, message: removal } as const
       },
-      previewPorts: async () => {
-        const result = outcome(await api().settings())
-        return result.ok ? { ok: true, value: result.value.settings.previewPorts } as const : result
-      },
+      previewTargets: async () => outcome(await api().previewTargets(sessionId)),
       preview: async (port: number) => outcome(await api().previewUrl(sessionId, port)),
     }),
   }, SessionActions as ComponentType<never>))

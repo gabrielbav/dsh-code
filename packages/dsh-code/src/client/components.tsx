@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Button, Input, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, ProvisionStep, SessionVariables, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, PreviewTargets, ProvisionStep, SessionVariables, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -134,13 +134,13 @@ export interface ActionsInjected {
   readonly hooks: { readonly view: HostObservable<CodeSessionView | null> }
   readonly pendingWork: () => Promise<Outcome<PendingWork | null>>
   readonly remove: () => Promise<Outcome<void>>
-  readonly previewPorts: () => Promise<Outcome<readonly number[]>>
+  readonly previewTargets: () => Promise<Outcome<PreviewTargets>>
   readonly preview: (port: number) => Promise<Outcome<string>>
 }
 
 type Dialog =
   | { kind: 'delete'; pending: PendingWork | null } | { kind: 'message'; text: string }
-  | { kind: 'preview'; ports: readonly number[] }
+  | { kind: 'preview'; targets: PreviewTargets }
 
 /**
  * Format a byte count.
@@ -185,7 +185,7 @@ function ResourcesBody({ usage, t }: { readonly usage: () => Promise<Outcome<Wor
  * @param props - injected Remote calls, session view and translator.
  * @returns the action buttons and their dialogs, or nothing for other sessions.
  */
-export function SessionActions({ useView, pendingWork, remove, previewPorts, preview, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
+export function SessionActions({ useView, pendingWork, remove, previewTargets, preview, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(value => value)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [busy, setBusy] = useState(false)
@@ -200,7 +200,7 @@ export function SessionActions({ useView, pendingWork, remove, previewPorts, pre
   const ready = view.status === 'ready'
   return (
     <div style={row}>
-      <Button size="sm" disabled={!ready || busy} onClick={() => { void run(previewPorts, ports => ({ kind: 'preview', ports })) }}>{t('action.preview')}</Button>
+      <Button size="sm" disabled={!ready || busy} onClick={() => { void run(previewTargets, targets => ({ kind: 'preview', targets })) }}>{t('action.preview')}</Button>
       <Button size="sm" disabled={busy} onClick={() => { void run(pendingWork, pending => ({ kind: 'delete', pending })) }}>{t('action.delete')}</Button>
       <Modal
         open={dialog?.kind === 'delete'}
@@ -213,27 +213,34 @@ export function SessionActions({ useView, pendingWork, remove, previewPorts, pre
         footer={<Button variant="primary" disabled={busy} onClick={() => { void run(remove, () => null) }}>{t('delete.confirm')}</Button>}
       />
       <Modal open={dialog?.kind === 'preview'} onClose={close} closeLabel={t('action.close')} title={t('preview.title')} description={t('preview.note')}>
-        {dialog?.kind === 'preview' && (dialog.ports.length === 0
-          ? <div style={note}>{t('preview.none')}</div>
+        {dialog?.kind === 'preview' && (dialog.targets.targets.length === 0
+          ? <div style={note}>{t('preview.nothingListening')}</div>
           : (
-            <div style={row}>
-              {dialog.ports.map(port => (
-                <Button
-                  key={port}
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => {
-                    // Open synchronously so the browser does not block the tab, then navigate it.
-                    const tab = window.open('about:blank', '_blank')
-                    void preview(port).then((r) => {
-                      if (r.ok && tab !== null) { tab.opener = null; tab.location.href = r.value }
-                      else { tab?.close(); setDialog({ kind: 'message', text: r.ok ? r.value : t('error.generic', { error: r.message }) }) }
-                    })
-                  }}
-                >
-                  {`${t('preview.open')} :${port}`}
-                </Button>
-              ))}
+            <div style={{ display: 'grid', gap: 8 }}>
+              {dialog.targets.targets.map(target => {
+                const openable = target.listening && !target.localOnly && target.allowed
+                const reason = !target.allowed ? t('preview.notAllowed') : !target.listening ? t('preview.notRunning') : target.localOnly ? t('preview.localOnly') : undefined
+                return (
+                  <div key={target.port} style={{ ...row, justifyContent: 'space-between' }}>
+                    <Button
+                      size="sm"
+                      disabled={busy || !openable}
+                      onClick={() => {
+                        // Open synchronously so the browser does not block the tab, then navigate it.
+                        const tab = window.open('about:blank', '_blank')
+                        void preview(target.port).then((r) => {
+                          if (r.ok && tab !== null) { tab.opener = null; tab.location.href = r.value }
+                          else { tab?.close(); setDialog({ kind: 'message', text: r.ok ? r.value : t('error.generic', { error: r.message }) }) }
+                        })
+                      }}
+                    >
+                      {`${t('preview.open')} :${target.port}`}
+                    </Button>
+                    {reason !== undefined && <span style={note}>{reason}</span>}
+                  </div>
+                )
+              })}
+              {dialog.targets.restricted && <div style={note}>{t('preview.restricted')}</div>}
             </div>
           ))}
       </Modal>

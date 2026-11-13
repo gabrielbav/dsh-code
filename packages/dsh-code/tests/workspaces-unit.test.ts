@@ -49,8 +49,8 @@ describe('guided setup checks', () => {
     expect(report.ok).toBe(false)
   })
 
-  it('refuses preview ports that were not declared', async () => {
-    await expect(manager(() => ok()).previewAddress('s', 22)).rejects.toThrowError(/not a declared preview port/)
+  it('refuses ports outside a non-empty Preview ports list', async () => {
+    await expect(manager(() => ok()).previewAddress('s', 22)).rejects.toThrowError(/not in Settings > Code > Preview ports/)
   })
 })
 

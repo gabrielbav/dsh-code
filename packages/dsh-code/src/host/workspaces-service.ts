@@ -21,7 +21,7 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import { WorkspaceError, WorkspaceManager, type WorkspaceManagerConfig, type WorkspaceRecord } from '../core/workspaces.ts'
 import { EnvironmentError, environmentLines, parseEnvironment } from '../core/environment.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { AccountRepositories, BranchList, GhAccount, ProvisionStep, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, BranchList, GhAccount, PreviewTargets, ProvisionStep, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
 import { PREVIEW_PREFIX, PreviewProxy } from './preview.ts'
 import { Git, gitRunner } from '../core/git.ts'
@@ -446,6 +446,29 @@ export class CodeWorkspacesService extends TypertRemoteService {
   }
 
   /**
+   * Ports the Preview dialog can offer: what the workspace listens on now, plus declared ports not running yet.
+   * @param sessionId - session id.
+   * @returns the ports and whether Settings restricts them.
+   */
+  @Remote
+  async previewTargets(sessionId: string): Promise<PreviewTargets> {
+    const declared = this.manager.config.previewPorts
+    const restricted = declared.length > 0
+    let listening: { port: number; localOnly: boolean }[] = []
+    try {
+      listening = await this.manager.listeningPorts(sessionId)
+    } catch (error) {
+      throw remoteFailure(error)
+    }
+    const ports = new Map(listening.map(p => [p.port, p]))
+    for (const port of declared) if (!ports.has(port)) ports.set(port, { port, localOnly: false })
+    const targets = [...ports.values()].sort((a, b) => a.port - b.port).map(p => ({
+      port: p.port, listening: listening.some(l => l.port === p.port), localOnly: p.localOnly, allowed: !restricted || declared.includes(p.port),
+    }))
+    return { targets, restricted }
+  }
+
+  /**
    * Mint an authenticated preview link for a declared container port.
    * @param sessionId - session id.
    * @param port - container port listed in Settings > Code > Preview ports.
@@ -455,6 +478,12 @@ export class CodeWorkspacesService extends TypertRemoteService {
   async previewUrl(sessionId: string, port: number): Promise<string> {
     if (this.ctx.get('webServer' as never) === undefined) throw new RemoteError('code/failed', 'previews need the Harness web server (dsh web)', { reason: 'unsupported' })
     try {
+      // Without a Preview ports list, only a port something listens on (beyond loopback) gets a link.
+      if (this.manager.config.previewPorts.length === 0) {
+        const open = (await this.manager.listeningPorts(sessionId)).find(p => p.port === port)
+        if (open === undefined) throw new WorkspaceError('unsafe-state', `nothing is listening on port ${port} in this workspace`)
+        if (open.localOnly) throw new WorkspaceError('unsafe-state', `port ${port} listens on 127.0.0.1 only; start the app on 0.0.0.0`)
+      }
       await this.manager.previewAddress(sessionId, port)
     } catch (error) {
       throw remoteFailure(error)
