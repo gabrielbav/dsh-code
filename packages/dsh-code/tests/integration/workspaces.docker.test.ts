@@ -124,7 +124,7 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     expect(usage!.memoryBytes).toBeGreaterThan(0)
     expect(usage!.diskBytes).toBeGreaterThan(0)
     expect((await manager.previewAddress('session-a', 8000)).host).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
-    await expect(manager.previewAddress('session-a', 22)).rejects.toThrowError(/preview port/)
+    await expect(manager.previewAddress('session-a', 22)).rejects.toThrowError(/preview port/i)
   }, 60_000)
 
   it('refuses a destination as soon as the policy no longer allows it', async () => {
@@ -156,10 +156,20 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
   it('stops the whole in-container process group a supervised exec started', async () => {
     await docker.exec(['exec', '-d', ...manager.execArgv(a, supervisedArgv('t1', ['sh', '-c', 'sleep 300 & sleep 301']), a.path, {}, false).slice(2)])
     await new Promise(r => setTimeout(r, 1000))
-    expect(await manager.runInside(a, ['sh', '-c', 'pgrep -fc "sleep 30[01]" || true'])).toBe('3')
+    // Only this test's two sleeps (the container's own `sleep infinity` keeps it alive).
+    expect(await manager.runInside(a, ['sh', '-c', 'pgrep -fc "^sleep 30[01]$" || true'])).toBe('2')
     await manager.runInside(a, ['sh', '-c', 'p=$(cat /tmp/.dsh-exec/t1); kill -TERM -"$p"'])
     await new Promise(r => setTimeout(r, 1000))
-    expect(await manager.runInside(a, ['sh', '-c', 'pgrep -fc "sleep 30[01]" || true'])).toBe('0')
+    expect(await manager.runInside(a, ['sh', '-c', 'pgrep -fc "^sleep 30[01]$" || true'])).toBe('0')
+  }, 60_000)
+
+  it('reports the real exit code of a supervised command and stays attached while it runs', async () => {
+    // Regression: setsid without --wait forks when it leads its process group, so docker exec returned 0 at once.
+    const argv = (command: string): string[] => manager.execArgv(a, supervisedArgv('t2', ['sh', '-c', command]), a.path, {}, false).slice(2)
+    expect((await docker.tryExec(['exec', ...argv('exit 3')])).code).toBe(3)
+    const started = Date.now()
+    expect((await docker.tryExec(['exec', ...argv('sleep 2')])).code).toBe(0)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1900)
   }, 60_000)
 
   it('reconciles after a restart and cleans up everything it owns', async () => {

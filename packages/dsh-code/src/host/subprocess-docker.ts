@@ -45,7 +45,9 @@ export function containerEnv(env: NodeJS.ProcessEnv | Readonly<Record<string, st
  * @returns argv to run inside the container.
  */
 export function supervisedArgv(execId: string, argv: readonly string[]): string[] {
-  return ['setsid', 'sh', '-c', `mkdir -p /tmp/.dsh-exec && echo $$ > /tmp/.dsh-exec/${execId} && exec "$@"`, 'dsh-exec', ...argv]
+  // --wait: docker exec starts setsid as a process-group leader, so setsid forks and, without --wait, exits 0 at
+  // once. Every command then reported exit code 0 and a background job "finished" while its process kept running.
+  return ['setsid', '--wait', 'sh', '-c', `mkdir -p /tmp/.dsh-exec && echo $$ > /tmp/.dsh-exec/${execId} && exec "$@"`, 'dsh-exec', ...argv]
 }
 
 /**

@@ -10,8 +10,8 @@ describe('docker subprocess helpers', () => {
 
   it('runs the program as its own process group and records its id', () => {
     const argv = supervisedArgv('abc', ['bash', '-c', 'echo hi'])
-    expect(argv.slice(0, 2)).toEqual(['setsid', 'sh'])
-    expect(argv[3]).toContain('/tmp/.dsh-exec/abc')
+    expect(argv.slice(0, 3)).toEqual(['setsid', '--wait', 'sh'])
+    expect(argv[4]).toContain('/tmp/.dsh-exec/abc')
     expect(argv.slice(-3)).toEqual(['bash', '-c', 'echo hi'])
   })
 })
