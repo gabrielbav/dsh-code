@@ -56,8 +56,17 @@
                 name: '@deepseek-ai/dsh-tool-fs-search'
                 config:
                   sampleOverCapGlobResults: false
-              # Repository files that reach the prompt are read through the container fs too: on the host,
-              # a CLAUDE.md or skill symlinked to ~/.aws/credentials would put that host file in the prompt.
+          # Prompt-file loaders get their own fs: the session checkout through the container (a repository
+          # CLAUDE.md or skill symlinked to ~/.aws/credentials resolves inside the sandbox), the user's and the
+          # Harness's own files read-only from the host, nothing else of the Code data folder, and no writes.
+          - id: code-prompt-files
+            name: cordis:group
+            group: true
+            isolate:
+              fs: true
+            config:
+              - id: code-prompt-fs
+                name: '@gabrielbav/dsh-code/prompt-fs'
               - id: agent-instructions
                 name: '@deepseek-ai/dsh-agent-instructions'
                 config:

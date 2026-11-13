@@ -67,6 +67,10 @@
     "./package.json": "./package.json",
     "./types": {
       "types": "./lib/types/types.d.ts"
+    },
+    "./prompt-fs": {
+      "types": "./lib/types/host/fs-prompt.d.ts",
+      "default": "./lib/host/fs-prompt.js"
     }
   },
   "files": [
