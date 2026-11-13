@@ -8,7 +8,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { mkdirSync, realpathSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
@@ -280,9 +280,14 @@ export class CodeWorkspacesService extends TypertRemoteService {
    * @param candidates - session ids to check; all recorded workspaces when omitted.
    */
   private async collect(candidates?: readonly string[]): Promise<void> {
-    const ids = candidates ?? this.manager.list().map(r => r.sessionId)
+    let ids = candidates
+    if (ids === undefined) {
+      // Recorded workspaces, plus step files of sessions whose record is already gone.
+      const stepFiles = await readdir(join(this.config.dataDir, 'steps')).catch(() => [] as string[])
+      ids = [...new Set([...this.manager.list().map(r => r.sessionId), ...stepFiles.filter(f => f.endsWith('.json')).map(f => f.slice(0, -5))])]
+    }
     for (const sessionId of ids) {
-      if (this.manager.get(sessionId) === undefined && !this.steps.has(sessionId)) continue
+      if (this.manager.get(sessionId) === undefined && !this.steps.has(sessionId) && candidates !== undefined) continue
       if (!(await this.sessionGone(sessionId))) continue
       this.previews.revoke(sessionId)
       this.selections.delete(sessionId)
