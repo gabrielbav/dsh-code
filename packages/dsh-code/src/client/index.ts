@@ -15,7 +15,7 @@ import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
 import type { AccountRepositories, GhAccount, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CodeSettingsSection, EnvironmentView, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import { CodeSettingsSection, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -304,14 +304,6 @@ function register(ctx: Context): void {
     }), 'dsh-code: + menu branch')
   })
 
-  face.slots.inject('conversation.view', () => face.slots.register({
-    name: 'conversation.view', id: 'dsh-code.environment', order: 20, locale: NS,
-    label: () => t('view.environment'),
-    inject: (sessionId: string) => {
-      watch(sessionId)
-      return { hooks: { view: viewOf(sessionId), presetIds }, load: async () => outcome(await api().environment(sessionId)) }
-    },
-  }, EnvironmentView as ComponentType<never>))
 
   face.slots.inject('conversation.input.left', () => face.slots.register({
     name: 'conversation.input.left', id: 'dsh-code.selection', order: 10, locale: NS,
@@ -345,14 +337,8 @@ function register(ctx: Context): void {
     name: 'conversation.session.header.actions', id: 'dsh-code.actions', order: 50, locale: NS,
     inject: (sessionId: string) => ({
       hooks: { view: viewOf(sessionId) },
-      diff: async () => outcome(await api().diff(sessionId)),
       pendingWork: async () => outcome(await api().pendingWork(sessionId)),
-      createPullRequest: async (title: string, body: string) => outcome(await api().createPullRequest(sessionId, title, body)),
-      restart: async () => {
-        const result = outcome(await api().restart(sessionId))
-        if (result.ok) viewOf(sessionId).set(result.value)
-        return result
-      },
+      environment: async () => outcome(await api().environment(sessionId)),
       // Delete removes the workspace, then the session: permanently through the session-delete plugin when
       // it is installed, otherwise by archiving it (the Harness's own removal; its history stays recoverable).
       remove: async () => {

@@ -132,19 +132,17 @@ function statusText(view: CodeSessionView, t: T): string | undefined {
 /** Injected face of the header actions. */
 export interface ActionsInjected {
   readonly hooks: { readonly view: HostObservable<CodeSessionView | null> }
-  readonly diff: () => Promise<Outcome<string>>
   readonly pendingWork: () => Promise<Outcome<PendingWork | null>>
-  readonly createPullRequest: (title: string, body: string) => Promise<Outcome<string>>
-  readonly restart: () => Promise<Outcome<CodeSessionView>>
   readonly remove: () => Promise<Outcome<void>>
+  readonly environment: () => Promise<Outcome<SessionEnvironment>>
   readonly usage: () => Promise<Outcome<WorkspaceUsage | null>>
   readonly previewPorts: () => Promise<Outcome<readonly number[]>>
   readonly preview: (port: number) => Promise<Outcome<string>>
 }
 
 type Dialog =
-  | { kind: 'diff'; text: string } | { kind: 'pr' } | { kind: 'delete'; pending: PendingWork | null } | { kind: 'message'; text: string }
-  | { kind: 'resources' } | { kind: 'preview'; ports: readonly number[] }
+  | { kind: 'delete'; pending: PendingWork | null } | { kind: 'message'; text: string }
+  | { kind: 'environment' } | { kind: 'preview'; ports: readonly number[] }
 
 /**
  * Format a byte count.
@@ -185,16 +183,14 @@ function ResourcesBody({ usage, t }: { readonly usage: () => Promise<Outcome<Wor
 }
 
 /**
- * Diff, pull request, restart and delete actions for a Code session.
+ * Environment, Preview and Delete session actions for a Code session.
  * @param props - injected Remote calls, session view and translator.
  * @returns the action buttons and their dialogs, or nothing for other sessions.
  */
-export function SessionActions({ useView, diff, pendingWork, createPullRequest, restart, remove, usage, previewPorts, preview, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
+export function SessionActions({ useView, pendingWork, remove, environment, usage, previewPorts, preview, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(value => value)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [busy, setBusy] = useState(false)
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
   const close = useMemo(() => () => { setDialog(null) }, [])
   if (view === null || view.status === 'pending' || view.status === 'deleted') return null
   const run = async <V,>(work: () => Promise<Outcome<V>>, done: (value: V) => Dialog | null): Promise<void> => {
@@ -206,29 +202,9 @@ export function SessionActions({ useView, diff, pendingWork, createPullRequest, 
   const ready = view.status === 'ready'
   return (
     <div style={row}>
-      <Button size="sm" disabled={!ready || busy} onClick={() => { void run(diff, text => ({ kind: 'diff', text })) }}>{t('action.diff')}</Button>
-      <Button size="sm" disabled={!ready || busy} onClick={() => { setTitle(''); setBody(''); setDialog({ kind: 'pr' }) }}>{t('action.pr')}</Button>
-      <Button size="sm" disabled={!ready || busy} onClick={() => { setDialog({ kind: 'resources' }) }}>{t('action.resources')}</Button>
+      <Button size="sm" disabled={busy} onClick={() => { setDialog({ kind: 'environment' }) }}>{t('action.environment')}</Button>
       <Button size="sm" disabled={!ready || busy} onClick={() => { void run(previewPorts, ports => ({ kind: 'preview', ports })) }}>{t('action.preview')}</Button>
-      <Button size="sm" disabled={busy} onClick={() => { void run(restart, () => null) }}>{t('action.restart')}</Button>
       <Button size="sm" disabled={busy} onClick={() => { void run(pendingWork, pending => ({ kind: 'delete', pending })) }}>{t('action.delete')}</Button>
-      <Modal open={dialog?.kind === 'diff'} onClose={close} closeLabel={t('action.close')} title={t('diff.title', { commit: (view.baseCommit ?? '').slice(0, 10) })}>
-        <pre style={{ maxHeight: '60vh', overflow: 'auto', fontSize: 12, whiteSpace: 'pre' }}>
-          {dialog?.kind === 'diff' ? (dialog.text === '' ? t('diff.empty') : dialog.text) : ''}
-        </pre>
-      </Modal>
-      <Modal
-        open={dialog?.kind === 'pr'}
-        onClose={close}
-        closeLabel={t('action.close')}
-        title={t('pr.title')}
-        footer={<Button variant="primary" disabled={busy || title.trim() === ''} onClick={() => { void run(() => createPullRequest(title.trim(), body), url => ({ kind: 'message', text: t('pr.done', { url }) })) }}>{t('pr.submit')}</Button>}
-      >
-        <div style={{ display: 'grid', gap: 8 }}>
-          <Input aria-label={t('pr.fieldTitle')} placeholder={t('pr.fieldTitle')} value={title} onChange={(event) => { setTitle(event.target.value) }} />
-          <textarea aria-label={t('pr.fieldBody')} placeholder={t('pr.fieldBody')} value={body} rows={6} style={{ ...select, maxWidth: 'none' }} onChange={(event) => { setBody(event.target.value) }} />
-        </div>
-      </Modal>
       <Modal
         open={dialog?.kind === 'delete'}
         onClose={close}
@@ -239,8 +215,16 @@ export function SessionActions({ useView, diff, pendingWork, createPullRequest, 
           : t('delete.clean')}
         footer={<Button variant="primary" disabled={busy} onClick={() => { void run(remove, () => null) }}>{t('delete.confirm')}</Button>}
       />
-      <Modal open={dialog?.kind === 'resources'} onClose={close} closeLabel={t('action.close')} title={t('resources.title')}>
-        {dialog?.kind === 'resources' && <ResourcesBody usage={usage} t={t} />}
+      <Modal open={dialog?.kind === 'environment'} onClose={close} closeLabel={t('action.close')} title={t('env.title')}>
+        {dialog?.kind === 'environment' && (
+          <div style={{ width: 'min(720px, 80vw)', display: 'grid', gap: 20 }}>
+            <EnvironmentPanel load={environment} status={view.status} t={t} />
+            <section>
+              <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('resources.title')}</h3>
+              <ResourcesBody usage={usage} t={t} />
+            </section>
+          </div>
+        )}
       </Modal>
       <Modal open={dialog?.kind === 'preview'} onClose={close} closeLabel={t('action.close')} title={t('preview.title')} description={t('preview.note')}>
         {dialog?.kind === 'preview' && (dialog.ports.length === 0
@@ -272,65 +256,54 @@ export function SessionActions({ useView, diff, pendingWork, createPullRequest, 
   )
 }
 
-// ── Environment tab (conversation.view) ────────────────────────────────────
-
-/** Injected face of the Environment tab. */
-export interface EnvironmentInjected {
-  readonly hooks: { readonly view: HostObservable<CodeSessionView | null>; readonly presetIds: HostObservable<ReadonlySet<string>> }
-  readonly load: () => Promise<Outcome<SessionEnvironment>>
-}
+// ── Environment (header dialog) ─────────────────────────────────────────────
 
 const grid: CSSProperties = { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '6px 16px', fontSize: 13, margin: 0 }
 const term: CSSProperties = { opacity: 0.65 }
 const value: CSSProperties = { margin: 0, fontFamily: 'var(--dsw-font-mono, ui-monospace, monospace)', overflowWrap: 'anywhere' }
 
 /**
- * Where this session runs: on this computer, or in an isolated Code workspace with its account, repository,
- * branches and container. Reloads when the session's Code state changes.
- * @param props - injected loader, state and translator.
- * @returns the environment details.
+ * Where this Code session runs: account, repository, branches, container, network and limits, then the
+ * provisioning timeline. Reloads every second while the workspace is still starting.
+ * @param props - environment loader, current workspace status and translator.
+ * @returns the details.
  */
-export function EnvironmentView({ useView, usePresetIds, load, t }: InjectFace<EnvironmentInjected> & PropsLocale<typeof NS>): ReactNode {
-  const view = useView(v => v)
-  const presets = usePresetIds(ids => ids.size)
+function EnvironmentPanel({ load, status, t }: { readonly load: () => Promise<Outcome<SessionEnvironment>>; readonly status: string; readonly t: T }): ReactNode {
   const [env, setEnv] = useState<SessionEnvironment | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const settling = env === null || (env.steps !== undefined && env.steps.length > 0 && !['ready', 'failed'].includes(env.steps[env.steps.length - 1]!.step))
   useEffect(() => {
     let live = true
-    void load().then((result) => {
-      if (!live) return
-      if (result.ok) { setEnv(result.value); setError(null) } else setError(result.message)
-    })
-    return () => { live = false }
-  }, [load, view?.status, view?.repository, view?.baseBranch, view?.account, presets])
-  // While a workspace starts, its steps change without a status change; reload until it settles.
-  const settling = env?.steps !== undefined && env.steps.length > 0 && !['ready', 'failed'].includes(env.steps[env.steps.length - 1]!.step)
-  useEffect(() => {
-    if (!settling) return
-    const timer = setInterval(() => { void load().then((r) => { if (r.ok) setEnv(r.value) }) }, 1000)
-    return () => { clearInterval(timer) }
-  }, [settling, load])
-  if (error !== null) return <div style={{ ...note, padding: 16 }} role="alert">{t('error.generic', { error })}</div>
-  if (env === null) return <div style={{ ...note, padding: 16 }}>{t('picker.loading')}</div>
-  const rows: [string, string | undefined][] = env.mode === 'host'
-    ? [[t('env.runs'), t('env.host')], [t('env.directory'), env.workingDirectory]]
-    : [
-      [t('env.runs'), t('env.code')],
-      [t('env.account'), env.account],
-      [t('env.repository'), env.repository ?? t('env.notChosen')],
-      [t('env.baseBranch'), env.baseBranch],
-      [t('env.baseCommit'), env.baseCommit?.slice(0, 12)],
-      [t('env.workingBranch'), env.workingBranch],
-      [t('env.status'), env.status],
-      [t('env.directory'), env.workingDirectory],
-      [t('env.container'), env.container?.name],
-      [t('env.runtime'), env.container === undefined ? undefined : `${env.container.runtime} (gVisor)`],
-      [t('env.image'), env.container?.image],
-      [t('env.network'), env.container === undefined ? undefined : t('env.networkValue', { mode: env.container.network })],
-      [t('env.limits'), env.container === undefined ? undefined : t('env.limitsValue', { cpus: String(env.container.cpus), memory: String(env.container.memoryMb) })],
-    ]
+    const tick = (): void => {
+      void load().then((result) => {
+        if (!live) return
+        if (result.ok) { setEnv(result.value); setError(null) } else setError(result.message)
+      })
+    }
+    tick()
+    if (!settling) return () => { live = false }
+    const timer = setInterval(tick, 1000)
+    return () => { live = false; clearInterval(timer) }
+  }, [load, status, settling])
+  if (error !== null) return <div style={note} role="alert">{t('error.generic', { error })}</div>
+  if (env === null) return <div style={note}>{t('picker.loading')}</div>
+  const rows: [string, string | undefined][] = [
+    [t('env.runs'), env.mode === 'host' ? t('env.host') : t('env.code')],
+    [t('env.account'), env.account],
+    [t('env.repository'), env.repository],
+    [t('env.baseBranch'), env.baseBranch],
+    [t('env.baseCommit'), env.baseCommit?.slice(0, 12)],
+    [t('env.workingBranch'), env.workingBranch],
+    [t('env.status'), env.status],
+    [t('env.directory'), env.workingDirectory],
+    [t('env.container'), env.container?.name],
+    [t('env.runtime'), env.container === undefined ? undefined : `${env.container.runtime} (gVisor)`],
+    [t('env.image'), env.container?.image],
+    [t('env.network'), env.container === undefined ? undefined : t('env.networkValue', { mode: env.container.network })],
+    [t('env.limits'), env.container === undefined ? undefined : t('env.limitsValue', { cpus: String(env.container.cpus), memory: String(env.container.memoryMb) })],
+  ]
   return (
-    <div style={{ padding: 16, maxWidth: 760 }}>
+    <div style={{ display: 'grid', gap: 20 }}>
       <dl style={grid}>
         {rows.filter((row): row is [string, string] => row[1] !== undefined && row[1] !== '').map(([k, v]) => (
           <div key={k} style={{ display: 'contents' }}>
@@ -344,28 +317,65 @@ export function EnvironmentView({ useView, usePresetIds, load, t }: InjectFace<E
   )
 }
 
-/** The latest provisioning, one row per step with its offset and duration. */
+const STEP_COLORS: Record<string, string> = {
+  held: '#8e8e93', 'checking-runtime': '#5b8def', 'egress-proxy': '#9b7be0', 'resolving-revision': '#e0a23c',
+  cloning: '#4caf7d', 'starting-container': '#e07a3c', 'health-check': '#3cb3c4', 'working-directory': '#b0b0b8',
+  ready: '#4caf7d', failed: '#d9534f',
+}
+
+/**
+ * The latest provisioning as a timeline: an overview bar with one span per step, then one row per step with
+ * its label, duration and its span on the same time scale. Steps run one after another, so spans do not overlap.
+ * @param props - recorded steps and translator.
+ * @returns the timeline.
+ */
 function ProvisionSteps({ steps, t }: { readonly steps: readonly ProvisionStep[]; readonly t: T }): ReactNode {
   const start = steps[0]!.time
+  const lastStep = steps[steps.length - 1]!
+  const done = lastStep.step === 'ready' || lastStep.step === 'failed'
+  const end = Math.max(done ? lastStep.time : Date.now(), start + 1)
+  const total = end - start
+  const spans = steps.map((s, i) => {
+    const next = steps[i + 1]
+    const until = next?.time ?? (done ? s.time : end)
+    return { ...s, offset: s.time - start, duration: Math.max(until - s.time, 0), open: next === undefined && !done }
+  })
   const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`
+  const label = (step: string): string => {
+    const key = `step.${step}` as never
+    const text = t(key)
+    return text === `step.${step}` ? step : text
+  }
+  const pct = (ms: number): string => `${(ms / total) * 100}%`
+  const bar = (s: typeof spans[number], height: number): ReactNode => (
+    <div
+      key={`${s.step}-${s.time}`}
+      title={`${label(s.step)} · ${seconds(s.duration)}`}
+      style={{ position: 'absolute', left: pct(s.offset), width: `max(${pct(s.duration)}, 2px)`, top: 0, height, borderRadius: 2, background: STEP_COLORS[s.step] ?? '#8e8e93', opacity: s.open ? 0.6 : 1 }}
+    />
+  )
   return (
-    <section style={{ marginTop: 20 }}>
-      <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('env.steps', { when: new Date(start).toLocaleString() })}</h3>
-      <ol style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4, fontSize: 13 }}>
-        {steps.map((s, i) => {
-          const next = steps[i + 1]
-          const last = next === undefined
-          return (
-            <li key={`${s.step}-${s.time}`} style={s.step === 'failed' ? { color: 'var(--dsw-alias-text-danger, #c0392b)' } : undefined}>
-              <span style={{ ...term, display: 'inline-block', minWidth: 52 }}>+{seconds(s.time - start)}</span>
-              {t(`step.${s.step}` as never) === `step.${s.step}` ? s.step : t(`step.${s.step}` as never)}
-              {next !== undefined && <span style={term}>{` · ${seconds(next.time - s.time)}`}</span>}
-              {last && s.step !== 'ready' && s.step !== 'failed' && <span style={term}>{` · ${t('step.running')}`}</span>}
-              {s.error !== undefined && <div style={{ ...value, fontSize: 12 }}>{s.error}</div>}
-            </li>
-          )
-        })}
-      </ol>
+    <section>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{t('env.steps', { when: new Date(start).toLocaleString() })}</h3>
+        <span style={{ ...term, fontSize: 12 }}>{done ? t('step.total', { total: seconds(total) }) : t('step.running')}</span>
+      </div>
+      <div style={{ position: 'relative', height: 10, marginBottom: 10, background: 'var(--dsw-alias-bg-subtle, rgba(127,127,127,.12))', borderRadius: 2 }}>
+        {spans.map(s => bar(s, 10))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 2fr) 56px 3fr', gap: '6px 12px', alignItems: 'center', fontSize: 12 }}>
+        {spans.map(s => (
+          <div key={`${s.step}-${s.time}`} style={{ display: 'contents' }}>
+            <span style={s.step === 'failed' ? { color: '#d9534f' } : undefined}>
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, marginRight: 6, background: STEP_COLORS[s.step] ?? '#8e8e93' }} />
+              {label(s.step)}
+              {s.error !== undefined && <div style={{ ...value, fontSize: 11, marginLeft: 14 }}>{s.error}</div>}
+            </span>
+            <span style={{ ...term, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{s.open ? '…' : seconds(s.duration)}</span>
+            <div style={{ position: 'relative', height: 8 }}>{bar(s, 8)}</div>
+          </div>
+        ))}
+      </div>
     </section>
   )
 }

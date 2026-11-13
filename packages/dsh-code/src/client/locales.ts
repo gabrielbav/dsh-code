@@ -5,6 +5,9 @@ export const NS = 'dsh-code'
 
 export const en = {
   'dialog.title': 'Code mode',
+  'action.environment': 'Environment',
+  'env.title': 'Code environment',
+  'step.total': 'took {total}',
   'delete.sessionUnavailable': 'The workspace is deleted, but this Harness cannot remove the session.',
   'env.steps': 'Provisioning ({when})',
   'step.held': 'First message held until the workspace is ready',
@@ -132,6 +135,9 @@ export type CodeKey = keyof typeof en
 
 export const zh: Record<CodeKey, string> = {
   'dialog.title': '代码模式',
+  'action.environment': '环境',
+  'env.title': '代码环境',
+  'step.total': '共用时 {total}',
   'delete.sessionUnavailable': '工作区已删除，但此 Harness 无法移除该会话。',
   'env.steps': '准备过程（{when}）',
   'step.held': '第一条消息等待工作区就绪',
