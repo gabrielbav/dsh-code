@@ -28,6 +28,8 @@ export interface ResourceLimits {
 /** Everything needed to create one workspace container. */
 export interface ContainerSpec {
   readonly name: string
+  /** Value of the owner label; the manager's namespace marks which manager owns the container. */
+  readonly owner?: string
   readonly image: string
   readonly sessionId: string
   readonly workspaceId: string
@@ -91,7 +93,7 @@ export function createArgs(spec: ContainerSpec): string[] {
     'create',
     '--name', spec.name,
     '--runtime', REQUIRED_RUNTIME,
-    '--label', `${OWNER_LABEL}=1`,
+    '--label', `${OWNER_LABEL}=${spec.owner ?? '1'}`,
     '--label', `${SESSION_LABEL}=${spec.sessionId}`,
     '--label', `${WORKSPACE_LABEL}=${spec.workspaceId}`,
     '--user', `${spec.uid}:${spec.gid}`,

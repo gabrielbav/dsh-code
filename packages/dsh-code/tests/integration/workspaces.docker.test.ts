@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { DockerCli } from '../../src/core/docker.ts'
-import { EGRESS_NETWORK, WorkspaceManager, type WorkspaceRecord } from '../../src/core/workspaces.ts'
+import { WorkspaceManager, type WorkspaceRecord } from '../../src/core/workspaces.ts'
 import { DEFAULT_ALLOW, type EgressPolicy } from '../../src/egress/policy.ts'
 import { supervisedArgv } from '../../src/host/subprocess-docker.ts'
 
@@ -20,7 +20,9 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-code-it-'))
   const origin = join(root, 'origin.git')
   const policy: EgressPolicy = { mode: 'allowlist', allow: DEFAULT_ALLOW, privateAllow: [`${UPSTREAM}:8080`], ports: [80, 443] }
+  // Its own namespace: the test never sees or removes a running dsh-code's containers, networks or proxy.
   const manager = new WorkspaceManager({
+    namespace: `dsh-code-it-${process.pid}`,
     dataDir: join(root, 'data'), image: 'dsh-code-worker:0.1.0', proxyImage: 'node:24-alpine',
     proxyDir: resolve(import.meta.dirname, '../../src/egress'),
     limits: { cpus: 1, memoryMb: 1024, pids: 256, tmpMb: 256 }, policy, uid: 1000, gid: 1000, maxWorkspaces: 4,
@@ -38,8 +40,11 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     execFileSync('git', ['-C', seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'readme'])
     execFileSync('git', ['clone', '-q', '--bare', seed, origin])
     await docker.tryExec(['rm', '-f', UPSTREAM])
+    // Leftovers of a crashed earlier run in this namespace; a running dsh-code's own are never named here.
+    await docker.tryExec(['rm', '-f', manager.proxyContainer])
+    await docker.tryExec(['network', 'rm', manager.internalNetwork, manager.egressNetwork])
     await manager.ensureNetwork()
-    await docker.exec(['run', '-d', '--name', UPSTREAM, '--network', EGRESS_NETWORK, 'node:24-alpine', 'node', '-e',
+    await docker.exec(['run', '-d', '--name', UPSTREAM, '--network', manager.egressNetwork, 'node:24-alpine', 'node', '-e',
       "require('http').createServer((q,s)=>s.end('upstream-ok')).listen(8080)"])
     a = await manager.provision('session-a', repo, 'main')
     b = await manager.provision('session-b', repo, 'main')
@@ -49,6 +54,8 @@ describe.runIf(enabled)('workspaces on Docker + gVisor', () => {
     await manager.delete('session-a').catch(() => undefined)
     await manager.delete('session-b').catch(() => undefined)
     await docker.tryExec(['rm', '-f', UPSTREAM])
+    await docker.tryExec(['rm', '-f', manager.proxyContainer])
+    await docker.tryExec(['network', 'rm', manager.internalNetwork, manager.egressNetwork])
     rmSync(root, { recursive: true, force: true })
   }, 120_000)
 

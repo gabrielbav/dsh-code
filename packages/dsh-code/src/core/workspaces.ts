@@ -55,6 +55,12 @@ export interface WorkspaceManagerConfig {
   readonly gid: number
   /** Maximum concurrent workspaces on this host. */
   readonly maxWorkspaces: number
+  /**
+   * Prefix of every Docker name and the owner label value this manager uses. Two managers with
+   * different namespaces never see or remove each other's containers and networks (the live tests
+   * rely on this). Defaults to `dsh-code`, which keeps the names and labels of existing installs.
+   */
+  readonly namespace?: string
 }
 
 /** Structured failure with a user-actionable code. */
@@ -70,9 +76,8 @@ export class WorkspaceError extends Error {
 }
 
 /** Network and proxy names. Fixed: they are the isolation invariant's anchors. */
-export const INTERNAL_NETWORK = 'dsh-code-internal'
-export const EGRESS_NETWORK = 'dsh-code-egress-out'
-export const PROXY_CONTAINER = 'dsh-code-egress'
+/** Default namespace; its owner label value stays `1` so earlier installs keep their containers. */
+export const DEFAULT_NAMESPACE = 'dsh-code'
 export const PROXY_PORT = 3128
 
 /** Owns workspace records and their Docker resources. */
@@ -95,6 +100,14 @@ export class WorkspaceManager {
     if (config.uid === 0 || config.gid === 0) throw new WorkspaceError('unsafe-state', 'workspace uid/gid must not be 0')
   }
 
+  private get namespace(): string { return this.config.namespace ?? DEFAULT_NAMESPACE }
+  private get owner(): string { return this.namespace === DEFAULT_NAMESPACE ? '1' : this.namespace }
+  /** Internal network: workers and the proxy only, no route out. */
+  get internalNetwork(): string { return `${this.namespace}-internal` }
+  /** Network the proxy uses to reach the outside. */
+  get egressNetwork(): string { return `${this.namespace}-egress-out` }
+  /** The egress proxy container, also its DNS alias on the internal network. */
+  get proxyContainer(): string { return `${this.namespace}-egress` }
   private get recordsDir(): string { return join(this.config.dataDir, 'records') }
   private get policyPath(): string { return join(this.config.dataDir, 'egress', 'policy.json') }
   /**
@@ -137,8 +150,8 @@ export class WorkspaceManager {
       if (record.status !== 'deleted') this.records.set(record.sessionId, record)
     }
     const orphansRemoved: string[] = []
-    for (const id of await this.docker.containersWithLabel(`${OWNER_LABEL}=1`)) {
-      if (id === PROXY_CONTAINER) continue
+    for (const id of await this.docker.containersWithLabel(`${OWNER_LABEL}=${this.owner}`)) {
+      if (id === this.proxyContainer) continue
       const info = await this.docker.inspect(id)
       const sessionId = info?.labels[SESSION_LABEL]
       if (sessionId === undefined) continue
@@ -167,29 +180,29 @@ export class WorkspaceManager {
     await mkdir(join(this.config.dataDir, 'egress'), { recursive: true })
     await cp(this.config.proxyDir, this.proxySourceDir, { recursive: true, force: true })
     await writeFile(this.policyPath, JSON.stringify(this.config.policy), { mode: 0o644 })
-    await this.docker.ensureNetwork(INTERNAL_NETWORK, ['--internal', '--driver', 'bridge', '--label', `${OWNER_LABEL}=1`])
-    await this.docker.ensureNetwork(EGRESS_NETWORK, ['--driver', 'bridge', '--label', `${OWNER_LABEL}=1`])
-    const info = await this.docker.inspect(PROXY_CONTAINER)
+    await this.docker.ensureNetwork(this.internalNetwork, ['--internal', '--driver', 'bridge', '--label', `${OWNER_LABEL}=${this.owner}`])
+    await this.docker.ensureNetwork(this.egressNetwork, ['--driver', 'bridge', '--label', `${OWNER_LABEL}=${this.owner}`])
+    const info = await this.docker.inspect(this.proxyContainer)
     if (info?.running === true) return
-    if (info !== undefined) await this.docker.removeContainer(PROXY_CONTAINER)
+    if (info !== undefined) await this.docker.removeContainer(this.proxyContainer)
     await this.docker.exec([
       // The proxy is dsh-code's own trusted code, not workspace code. It runs
       // under the default runtime because it must resolve names through the
       // daemon's resolver, which gVisor's network stack cannot reach.
-      'create', '--name', PROXY_CONTAINER,
-      '--label', `${OWNER_LABEL}=1`, '--user', '65534:65534', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+      'create', '--name', this.proxyContainer,
+      '--label', `${OWNER_LABEL}=${this.owner}`, '--user', '65534:65534', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
       '--read-only', '--pids-limit', '256', '--memory', '256m', '--restart', 'unless-stopped',
-      '--network', EGRESS_NETWORK,
+      '--network', this.egressNetwork,
       '--mount', `type=bind,source=${this.proxySourceDir},target=/opt/egress/src,readonly`,
       '--mount', `type=bind,source=${this.config.dataDir}/egress,target=/opt/egress/policy,readonly`,
       this.config.proxyImage, 'node', `/opt/egress/src/${existsSync(join(this.proxySourceDir, 'entry.js')) ? 'entry.js' : 'entry.ts'}`, '/opt/egress/policy/policy.json', String(PROXY_PORT),
     ])
-    await this.docker.exec(['network', 'connect', '--alias', PROXY_CONTAINER, INTERNAL_NETWORK, PROXY_CONTAINER])
-    await this.docker.exec(['start', PROXY_CONTAINER])
+    await this.docker.exec(['network', 'connect', '--alias', this.proxyContainer, this.internalNetwork, this.proxyContainer])
+    await this.docker.exec(['start', this.proxyContainer])
   }
 
   private async proxyAddress(): Promise<string> {
-    const address = await this.docker.exec(['inspect', '--format', `{{(index .NetworkSettings.Networks "${INTERNAL_NETWORK}").IPAddress}}`, PROXY_CONTAINER])
+    const address = await this.docker.exec(['inspect', '--format', `{{(index .NetworkSettings.Networks "${this.internalNetwork}").IPAddress}}`, this.proxyContainer])
     if (!/^\d+\.\d+\.\d+\.\d+$/.test(address)) throw new WorkspaceError('provision-failed', 'egress proxy has no internal address')
     return address
   }
@@ -276,7 +289,7 @@ export class WorkspaceManager {
       await chownTree(path, this.config.uid, this.config.gid)
       record = {
         workspaceId, sessionId, repository, ...account === '' ? {} : { account }, baseBranch, baseCommit: checkout.baseCommit, workingBranch,
-        path, mirrorPath, containerName: `dsh-code-${workspaceId.slice(0, 12)}`, image: this.config.image,
+        path, mirrorPath, containerName: `${this.namespace}-${workspaceId.slice(0, 12)}`, image: this.config.image,
         runtime: REQUIRED_RUNTIME, status: 'provisioning', createdAt: now, updatedAt: now,
       }
       await this.save(record)
@@ -289,11 +302,11 @@ export class WorkspaceManager {
       await this.docker.removeContainer(record.containerName)
       const proxyAddress = await this.proxyAddress()
       await this.docker.exec(createArgs({
-        name: record.containerName, image: record.image, sessionId, workspaceId,
-        workspacePath: record.path, network: INTERNAL_NETWORK,
-        proxyUrl: this.config.policy.mode === 'none' ? undefined : `http://${PROXY_CONTAINER}:${PROXY_PORT}`,
+        name: record.containerName, owner: this.owner, image: record.image, sessionId, workspaceId,
+        workspacePath: record.path, network: this.internalNetwork,
+        proxyUrl: this.config.policy.mode === 'none' ? undefined : `http://${this.proxyContainer}:${PROXY_PORT}`,
         uid: this.config.uid, gid: this.config.gid, limits: this.config.limits,
-        hosts: { [PROXY_CONTAINER]: proxyAddress },
+        hosts: { [this.proxyContainer]: proxyAddress },
       }))
       await this.docker.exec(['start', record.containerName])
       onProgress('health-check')
