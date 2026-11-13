@@ -7,10 +7,11 @@
  */
 import { chown, constants, cp, lchown, mkdir, open, readFile, rm, writeFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { DockerCli } from './docker.ts'
 import { createArgs, execArgs, OWNER_LABEL, REQUIRED_RUNTIME, SESSION_LABEL, type ResourceLimits } from './container-spec.ts'
+import { unsafeFolderReason } from './mounts.ts'
 import { Git, workingBranchName } from './git.ts'
 import type { RepositoryRef, SelfTestCheck, SelfTestReport, WorkspaceStatus, WorkspaceUsage } from '../types.ts'
 
@@ -27,6 +28,8 @@ export interface WorkspaceRecord {
   readonly baseBranch: string
   readonly baseCommit: string
   readonly workingBranch: string
+  /** Sandbox options the current container was created with. */
+  options?: WorkspaceOptions
   readonly path: string
   readonly mirrorPath: string
   readonly containerName: string
@@ -36,6 +39,16 @@ export interface WorkspaceRecord {
   error?: string
   readonly createdAt: string
   updatedAt: string
+}
+
+/** Sandbox options applied when a workspace container is created. */
+export interface WorkspaceOptions {
+  readonly readOnlyWorkspace: boolean
+  /** Host folder of this repository's dependency cache, when the cache is on. */
+  readonly cacheDir?: string
+  readonly readOnlyFolders: readonly string[]
+  readonly shmMb: number
+  readonly lockdown: boolean
 }
 
 /** Deployment configuration for the manager. */
@@ -61,6 +74,18 @@ export interface WorkspaceManagerConfig {
   previewPorts: readonly number[]
   /** New `dsh-code/<hash>` branch per session (default); false works on the base branch itself. */
   newBranch?: boolean
+  /** Mount checkouts read-only. */
+  readOnlyWorkspace?: boolean
+  /** Keep a dependency cache per repository under dataDir/caches. */
+  dependencyCache?: boolean
+  /** Extra host folders mounted read-only at the same path. */
+  readOnlyFolders?: readonly string[]
+  /** /dev/shm size in MB; 256 when unset. */
+  shmMb?: number
+  /** Forces a read-only workspace, no cache and no extra folders (network none is applied through the policy). */
+  lockdown?: boolean
+  /** Default variables for every workspace; a session's own values override them by name. */
+  environment?: Readonly<Record<string, string>>
   /**
    * Prefix of every Docker name and the owner label value this manager uses. Two managers with
    * different namespaces never see or remove each other's containers and networks (the live tests
@@ -184,6 +209,16 @@ export class WorkspaceManager {
     await mkdir(this.recordsDir, { recursive: true })
     // A running proxy reloads this file, so a policy saved while Harness was down applies now.
     await this.updatePolicy(this.config.policy)
+    // Session variables are read by every exec, which is synchronous; load them before any command runs.
+    await mkdir(join(this.config.dataDir, 'env'), { recursive: true, mode: 0o700 })
+    for (const file of await readdir(join(this.config.dataDir, 'env'))) {
+      if (!file.endsWith('.json')) continue
+      try {
+        this.sessionEnv.set(file.slice(0, -5), JSON.parse(await readFile(join(this.config.dataDir, 'env', file), 'utf8')) as Record<string, string>)
+      } catch {
+        // A damaged variables file is ignored; the session starts with the defaults only.
+      }
+    }
     for (const file of await readdir(this.recordsDir)) {
       if (!file.endsWith('.json')) continue
       const record = JSON.parse(await readFile(join(this.recordsDir, file), 'utf8')) as WorkspaceRecord
@@ -341,7 +376,7 @@ export class WorkspaceManager {
    * @param onProgress - progress callback for the UI.
    * @returns the ready record.
    */
-  provision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string) => void = () => {}, account: string = ''): Promise<WorkspaceRecord> {
+  provision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string, detail?: string) => void = () => {}, account: string = ''): Promise<WorkspaceRecord> {
     const existing = this.records.get(sessionId)
     if (existing !== undefined && existing.status === 'ready') return Promise.resolve(existing)
     const inflight = this.pending.get(sessionId)
@@ -351,11 +386,80 @@ export class WorkspaceManager {
     return attempt
   }
 
+  /**
+   * The options a new container gets now: Lockdown forces a read-only checkout, no cache and no extra folders.
+   * Folders that are unsafe, missing, not directories or inside dataDir are skipped and reported, never fatal.
+   */
+  private async optionsFor(repository: RepositoryRef, onProgress: (step: string, detail?: string) => void): Promise<WorkspaceOptions> {
+    const lockdown = this.config.lockdown === true
+    const folders: string[] = []
+    for (const folder of lockdown ? [] : this.config.readOnlyFolders ?? []) {
+      const dataDir = resolve(this.config.dataDir)
+      const reason = unsafeFolderReason(folder)
+        ?? (folder === dataDir || folder.startsWith(`${dataDir}/`) || dataDir.startsWith(`${folder}/`) ? 'it overlaps the Code data folder' : undefined)
+        ?? (existsSync(folder) && statSync(folder).isDirectory() ? undefined : 'it does not exist or is not a folder')
+      if (reason === undefined) folders.push(folder)
+      else onProgress('folder-skipped', `${folder}: ${reason}`)
+    }
+    let cacheDir: string | undefined
+    if (!lockdown && this.config.dependencyCache === true) {
+      // One cache per repository: a repository can never plant packages in another one's cache.
+      cacheDir = join(this.config.dataDir, 'caches', repository.fullName.replace(/[^A-Za-z0-9._-]+/g, '__'))
+      await mkdir(cacheDir, { recursive: true, mode: 0o700 })
+      if (process.getuid?.() === 0) await chown(cacheDir, this.config.uid, this.config.gid)
+    }
+    return {
+      readOnlyWorkspace: lockdown || this.config.readOnlyWorkspace === true, readOnlyFolders: folders,
+      shmMb: this.config.shmMb ?? 256, lockdown, ...cacheDir === undefined ? {} : { cacheDir },
+    }
+  }
+
+  private readonly sessionEnv = new Map<string, Record<string, string>>()
+  private envPath(sessionId: string): string { return join(this.config.dataDir, 'env', `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`) }
+
+  /**
+   * A session's own variables, saved under dataDir/env.
+   * @param sessionId - logical session id.
+   * @returns the session's variables (without the defaults).
+   */
+  async sessionEnvironment(sessionId: string): Promise<Record<string, string>> {
+    const known = this.sessionEnv.get(sessionId)
+    if (known !== undefined) return known
+    let loaded: Record<string, string> = {}
+    try {
+      loaded = JSON.parse(await readFile(this.envPath(sessionId), 'utf8')) as Record<string, string>
+    } catch {
+      // No variables saved for this session.
+    }
+    this.sessionEnv.set(sessionId, loaded)
+    return loaded
+  }
+
+  /**
+   * Replace a session's own variables; the next command in its workspace sees them.
+   * @param sessionId - logical session id.
+   * @param env - already validated variables.
+   */
+  async setSessionEnvironment(sessionId: string, env: Readonly<Record<string, string>>): Promise<void> {
+    await mkdir(join(this.config.dataDir, 'env'), { recursive: true, mode: 0o700 })
+    await writeFile(this.envPath(sessionId), JSON.stringify(env), { mode: 0o600 })
+    this.sessionEnv.set(sessionId, { ...env })
+  }
+
+  /**
+   * Variables a command in this session starts with: the defaults, then the session's own values.
+   * @param sessionId - logical session id.
+   * @returns merged variables.
+   */
+  environmentFor(sessionId: string): Record<string, string> {
+    return { ...this.config.environment, ...this.sessionEnv.get(sessionId) }
+  }
+
   private async gitAs(account: string | undefined): Promise<Git> {
     return account === undefined || account === '' ? this.git : this.git.withEnv(await this.credentials(account))
   }
 
-  private async doProvision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string) => void, account: string): Promise<WorkspaceRecord> {
+  private async doProvision(sessionId: string, repository: RepositoryRef, baseBranch: string, onProgress: (step: string, detail?: string) => void, account: string): Promise<WorkspaceRecord> {
     const live = [...this.records.values()].filter(r => r.status !== 'deleted' && r.sessionId !== sessionId).length
     if (live >= this.config.maxWorkspaces) throw new WorkspaceError('limit-reached', `at most ${this.config.maxWorkspaces} Code workspaces may run on this host`)
     onProgress('checking-runtime')
@@ -393,7 +497,12 @@ export class WorkspaceManager {
       onProgress('starting-container')
       await this.docker.removeContainer(record.containerName)
       const proxyAddress = await this.proxyAddress()
+      const options = await this.optionsFor(record.repository, onProgress)
+      record.options = options
+      await this.save(record)
       await this.docker.exec(createArgs({
+        readOnlyWorkspace: options.readOnlyWorkspace, readOnlyFolders: options.readOnlyFolders, shmMb: options.shmMb,
+        ...options.cacheDir === undefined ? {} : { cacheDir: options.cacheDir },
         name: record.containerName, owner: this.owner, image: record.image, sessionId, workspaceId,
         workspacePath: record.path, network: this.internalNetwork,
         proxyUrl: this.config.policy.mode === 'none' ? undefined : `http://${this.proxyContainer}:${PROXY_PORT}`,
@@ -506,6 +615,8 @@ export class WorkspaceManager {
    * @param sessionId - logical session id.
    */
   async delete(sessionId: string): Promise<void> {
+    this.sessionEnv.delete(sessionId)
+    await rm(this.envPath(sessionId), { force: true })
     const record = this.records.get(sessionId)
     if (record === undefined) return
     await this.setStatus(record, 'deleting')

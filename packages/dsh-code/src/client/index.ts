@@ -13,7 +13,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { AccountRepositories, GhAccount, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, GhAccount, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CodeSettingsSection, EnvironmentTab, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
@@ -35,6 +35,8 @@ interface CodeRemote {
   branches(repository: string, sessionId: string | null): Promise<Result<BranchList>>
   repositoriesByAccount(): Promise<Result<AccountRepositories[]>>
   ghAccounts(): Promise<Result<GhAccount[]>>
+  sessionVariables(sessionId: string): Promise<Result<SessionVariables>>
+  setSessionVariables(sessionId: string, lines: string[]): Promise<Result<SessionVariables>>
   environment(sessionId: string): Promise<Result<SessionEnvironment>>
   select(sessionId: string, repository: string, baseBranch: string | null, account: string | null): Promise<Result<CodeSessionView>>
   sessions(): Promise<Result<CodeSessionView[]>>
@@ -314,6 +316,8 @@ function register(ctx: Context): void {
         hooks: { view: viewOf(sessionId), presetIds }, sessionId,
         load: async () => outcome(await api().environment(sessionId)),
         usage: async () => outcome(await api().usage(sessionId)),
+        variables: async () => outcome(await api().sessionVariables(sessionId)),
+        saveVariables: async (lines: string[]) => outcome(await api().setSessionVariables(sessionId, lines)),
       }
     },
   }, EnvironmentTab as ComponentType<never>))

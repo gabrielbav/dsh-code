@@ -95,6 +95,14 @@ export interface SessionEnvironment {
   readonly baseCommit?: string
   readonly workingBranch?: string
   readonly status?: string
+  /** Sandbox options the container was created with (or would be, before the first message). */
+  readonly options?: {
+    readonly readOnlyWorkspace: boolean
+    readonly dependencyCache: boolean
+    readonly readOnlyFolders: readonly string[]
+    readonly shmMb: number
+    readonly lockdown: boolean
+  }
   /** Provisioning steps of the latest start, oldest first. */
   readonly steps?: readonly ProvisionStep[]
   readonly container?: {
@@ -135,6 +143,18 @@ export interface CodeSettings {
   readonly disabledAccounts: readonly string[]
   /** Give each session its own `dsh-code/<hash>` branch; off works on the chosen branch itself. */
   readonly newBranch: boolean
+  /** /dev/shm size in MB. */
+  readonly shmMb: number
+  /** Mount checkouts read-only. */
+  readonly readOnlyWorkspace: boolean
+  /** Keep a dependency cache per repository. */
+  readonly dependencyCache: boolean
+  /** Extra host folders mounted read-only at the same path. */
+  readonly readOnlyFolders: readonly string[]
+  /** Default `NAME=value` variables for every session. */
+  readonly environment: readonly string[]
+  /** Network none, read-only workspace, no cache and no extra folders, whatever else is set. */
+  readonly lockdown: boolean
 }
 
 /** Settings plus whether they can be saved to the profile. */
@@ -146,4 +166,10 @@ export interface CodeSettingsView {
 /** One account the host's gh CLI is signed in with, for Settings > Code. */
 export interface GhAccount {
   readonly login: string
+}
+
+/** Variables of one session: the Settings defaults and its own values (which win by name). */
+export interface SessionVariables {
+  readonly defaults: readonly string[]
+  readonly session: readonly string[]
 }

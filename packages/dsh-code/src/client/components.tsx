@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Button, Input, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, ProvisionStep, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, ProvisionStep, SessionVariables, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -287,6 +287,11 @@ function EnvironmentPanel({ load, status, t }: { readonly load: () => Promise<Ou
     [t('env.image'), env.container?.image],
     [t('env.network'), env.container === undefined ? undefined : t('env.networkValue', { mode: env.container.network })],
     [t('env.limits'), env.container === undefined ? undefined : t('env.limitsValue', { cpus: String(env.container.cpus), memory: String(env.container.memoryMb) })],
+    [t('env.lockdown'), env.options === undefined ? undefined : env.options.lockdown ? t('env.on') : t('env.off')],
+    [t('env.readOnlyWorkspace'), env.options === undefined ? undefined : env.options.readOnlyWorkspace ? t('env.on') : t('env.off')],
+    [t('env.dependencyCache'), env.options === undefined ? undefined : env.options.dependencyCache ? t('env.on') : t('env.off')],
+    [t('env.readOnlyFolders'), env.options === undefined || env.options.readOnlyFolders.length === 0 ? undefined : env.options.readOnlyFolders.join('\n')],
+    [t('env.shm'), env.options === undefined ? undefined : `${env.options.shmMb} MB`],
   ]
   return (
     <div style={{ display: 'grid', gap: 20 }}>
@@ -375,8 +380,8 @@ export interface SettingsInjected {
   readonly save: (settings: CodeSettings) => Promise<Outcome<CodeSettingsView>>
 }
 
-type Draft = Record<'allow' | 'privateAllow' | 'ports' | 'previewPorts' | 'cpus' | 'memoryMb' | 'pids' | 'tmpMb' | 'maxWorkspaces' | 'workerImage', string>
-  & { network: CodeSettings['network']; disabledAccounts: readonly string[]; newBranch: boolean }
+type Draft = Record<'allow' | 'privateAllow' | 'ports' | 'previewPorts' | 'cpus' | 'memoryMb' | 'pids' | 'tmpMb' | 'maxWorkspaces' | 'workerImage' | 'shmMb' | 'readOnlyFolders' | 'environment', string>
+  & { network: CodeSettings['network']; disabledAccounts: readonly string[]; newBranch: boolean; readOnlyWorkspace: boolean; dependencyCache: boolean; lockdown: boolean }
 
 function toDraft(settings: CodeSettings): Draft {
   return {
@@ -386,6 +391,8 @@ function toDraft(settings: CodeSettings): Draft {
     cpus: String(settings.cpus), memoryMb: String(settings.memoryMb), pids: String(settings.pids), tmpMb: String(settings.tmpMb),
     maxWorkspaces: String(settings.maxWorkspaces), workerImage: settings.workerImage,
     disabledAccounts: settings.disabledAccounts, newBranch: settings.newBranch,
+    shmMb: String(settings.shmMb), readOnlyFolders: settings.readOnlyFolders.join('\n'), environment: settings.environment.join('\n'),
+    readOnlyWorkspace: settings.readOnlyWorkspace, dependencyCache: settings.dependencyCache, lockdown: settings.lockdown,
   }
 }
 
@@ -403,6 +410,9 @@ export function fromDraft(draft: Draft): CodeSettings {
     cpus: Number(draft.cpus), memoryMb: Number(draft.memoryMb), pids: Number(draft.pids), tmpMb: Number(draft.tmpMb),
     maxWorkspaces: Number(draft.maxWorkspaces), workerImage: draft.workerImage.trim(),
     disabledAccounts: draft.disabledAccounts, newBranch: draft.newBranch,
+    shmMb: Number(draft.shmMb), readOnlyFolders: draft.readOnlyFolders.split('\n').map(x => x.trim()).filter(x => x !== ''),
+    environment: draft.environment.split('\n').map(x => x.trim()).filter(x => x !== ''),
+    readOnlyWorkspace: draft.readOnlyWorkspace, dependencyCache: draft.dependencyCache, lockdown: draft.lockdown,
   }
 }
 
@@ -437,13 +447,22 @@ export function CodeSettingsSection({ load, save, accounts, t }: SettingsInjecte
     return () => { live = false }
   }, [load, t])
   if (draft === null) return <div style={note}>{message ?? t('picker.loading')}</div>
-  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow' | 'disabledAccounts' | 'newBranch'>, type: 'text' | 'number' = 'text'): ReactNode => (
+  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow' | 'disabledAccounts' | 'newBranch' | 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'readOnlyFolders' | 'environment'>, type: 'text' | 'number' = 'text'): ReactNode => (
     <label style={{ display: 'grid', gap: 4 }}>
       <span style={note}>{t(`settings.${key}`)}</span>
       <Input aria-label={t(`settings.${key}`)} type={type} value={draft[key]} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }) }} />
     </label>
   )
-  const area = (key: 'allow' | 'privateAllow'): ReactNode => (
+  const toggle = (key: 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown', hint: string): ReactNode => (
+    <div style={{ display: 'grid', gap: 2, maxWidth: 560 }}>
+      <div style={{ ...row, justifyContent: 'space-between' }}>
+        <span>{t(`settings.${key}`)}</span>
+        <Switch label={t(`settings.${key}`)} checked={draft[key]} onChange={(on) => { setDraft({ ...draft, [key]: on }) }} />
+      </div>
+      <div style={note}>{hint}</div>
+    </div>
+  )
+  const area = (key: 'allow' | 'privateAllow' | 'readOnlyFolders' | 'environment'): ReactNode => (
     <label style={{ display: 'grid', gap: 4 }}>
       <span style={note}>{t(`settings.${key}`)}</span>
       <textarea aria-label={t(`settings.${key}`)} rows={6} value={draft[key]} style={{ ...select, maxWidth: 'none', fontFamily: 'monospace' }} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }) }} />
@@ -465,6 +484,8 @@ export function CodeSettingsSection({ load, save, accounts, t }: SettingsInjecte
     >
       <h2 style={{ margin: 0, fontSize: 16 }}>{t('settings.title')}</h2>
       {!writable && <div style={note} role="note">{t('settings.notWritable')}</div>}
+      {toggle('lockdown', t('settings.lockdownHint'))}
+      {draft.lockdown && <div style={note} role="note">{t('settings.lockdownActive')}</div>}
       <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 8 }}>
         <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.network')}</legend>
         <SegmentedControl<CodeSettings['network']>
@@ -490,6 +511,19 @@ export function CodeSettingsSection({ load, save, accounts, t }: SettingsInjecte
         {field('pids', 'number')}
         {field('tmpMb', 'number')}
         {field('maxWorkspaces', 'number')}
+        {field('shmMb', 'number')}
+      </fieldset>
+      <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 10 }} disabled={draft.lockdown}>
+        <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.workspace')}</legend>
+        {toggle('readOnlyWorkspace', t('settings.readOnlyWorkspaceHint'))}
+        {toggle('dependencyCache', t('settings.dependencyCacheHint'))}
+        {area('readOnlyFolders')}
+        <div style={note} role="note">{t('settings.readOnlyFoldersHint')}</div>
+      </fieldset>
+      <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 6 }}>
+        <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.variables')}</legend>
+        {area('environment')}
+        <div style={note}>{t('settings.environmentHint')}</div>
       </fieldset>
       <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 8 }}>
         <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.accounts')}</legend>
@@ -563,6 +597,65 @@ export interface EnvironmentTabInjected {
   readonly sessionId: string
   readonly load: () => Promise<Outcome<SessionEnvironment>>
   readonly usage: () => Promise<Outcome<WorkspaceUsage | null>>
+  readonly variables: () => Promise<Outcome<SessionVariables>>
+  readonly saveVariables: (lines: string[]) => Promise<Outcome<SessionVariables>>
+}
+
+/**
+ * This session's own variables, editable, beside the defaults it inherits. Saved values apply from the agent's
+ * next command; a command already running keeps the values it started with.
+ */
+function SessionVariablesEditor({ variables, save, t }: { readonly variables: () => Promise<Outcome<SessionVariables>>; readonly save: (lines: string[]) => Promise<Outcome<SessionVariables>>; readonly t: T }): ReactNode {
+  const [loaded, setLoaded] = useState<SessionVariables | null>(null)
+  const [draft, setDraft] = useState('')
+  const [message, setMessage] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let live = true
+    void variables().then((r) => {
+      if (!live) return
+      if (r.ok) { setLoaded(r.value); setDraft(r.value.session.join('\n')) } else setMessage(t('error.generic', { error: r.message }))
+    })
+    return () => { live = false }
+  }, [variables, t])
+  return (
+    <section style={{ display: 'grid', gap: 8 }}>
+      <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{t('env.variables')}</h3>
+      {loaded !== null && loaded.defaults.length > 0 && (
+        <div style={note}>
+          {t('env.variablesDefaults')}
+          <pre style={{ ...value, margin: '4px 0 0', fontSize: 12, whiteSpace: 'pre-wrap' }}>{loaded.defaults.join('\n')}</pre>
+        </div>
+      )}
+      <textarea
+        aria-label={t('env.variables')}
+        rows={5}
+        value={draft}
+        placeholder="NODE_ENV=development"
+        style={{ ...select, maxWidth: 'none', fontFamily: 'monospace' }}
+        onChange={(event) => { setDraft(event.target.value) }}
+      />
+      <div style={note}>{t('env.variablesHint')}</div>
+      <div style={row}>
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={busy || loaded === null}
+          onClick={() => {
+            setBusy(true)
+            setMessage(null)
+            void save(draft.split('\n').map(x => x.trim()).filter(x => x !== '')).then((r) => {
+              setBusy(false)
+              if (r.ok) { setLoaded(r.value); setDraft(r.value.session.join('\n')); setMessage(t('settings.saved')) } else setMessage(t('error.generic', { error: r.message }))
+            })
+          }}
+        >
+          {t('settings.save')}
+        </Button>
+        {message !== null && <span style={note} role="status" aria-live="polite">{message}</span>}
+      </div>
+    </section>
+  )
 }
 
 /**
@@ -571,7 +664,7 @@ export interface EnvironmentTabInjected {
  * @param props - injected loaders, state and translator.
  * @returns the tab content.
  */
-export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, t }: InjectFace<EnvironmentTabInjected> & PropsLocale<typeof NS>): ReactNode {
+export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, variables, saveVariables, t }: InjectFace<EnvironmentTabInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(v => v)
   const codeMode = usePresetIds(ids => ids.has(sessionId))
   const status = view?.status ?? (codeMode ? 'none' : 'host')
@@ -579,6 +672,7 @@ export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, 
     <div style={{ padding: '16px 24px', overflow: 'auto', height: '100%', boxSizing: 'border-box' }}>
       <div style={{ maxWidth: 960, display: 'grid', gap: 24 }}>
         <EnvironmentPanel load={load} status={`${status}:${view?.repository ?? ''}:${view?.baseBranch ?? ''}:${String(codeMode)}`} t={t} />
+        {codeMode && <SessionVariablesEditor variables={variables} save={saveVariables} t={t} />}
         {view !== null && view.status !== 'pending' && (
           <section>
             <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('resources.title')}</h3>

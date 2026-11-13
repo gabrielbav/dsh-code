@@ -16,10 +16,11 @@ import type {
 } from '@deepseek-ai/dsh-subprocess'
 import type { WorkspaceManager, WorkspaceRecord } from '../core/workspaces.ts'
 import { WorkspaceError } from '../core/workspaces.ts'
+import { CREDENTIAL_NAME } from '../core/environment.ts'
 import type {} from './workspaces-service.ts'
 
 /** Environment names never forwarded into a workspace. */
-const BLOCKED_ENV = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|^DSH_|^DOCKER_|^SSH_AUTH_SOCK$/i
+const BLOCKED_ENV = CREDENTIAL_NAME
 
 /**
  * Select the variables a tool asked for explicitly. The container keeps its
@@ -105,7 +106,9 @@ export class DockerSubprocessRuntime extends LocalSubprocessRuntime {
   override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
     const record = this.recordFor(spec.cwd)
     const execId = randomUUID()
-    const argv = ['docker', ...this.workspaces.execArgv(record, supervisedArgv(execId, containerArgv(spec.argv)), spec.cwd, containerEnv(spec.env), false)]
+    // User variables (defaults, then the session's own) first; the tool's explicit variables win.
+    const env = { ...containerEnv(this.workspaces.environmentFor(record.sessionId)), ...containerEnv(spec.env) }
+    const argv = ['docker', ...this.workspaces.execArgv(record, supervisedArgv(execId, containerArgv(spec.argv)), spec.cwd, env, false)]
     const handle = super.spawn({ ...spec, argv, cwd: this.workspaces.config.dataDir, env: undefined, signal: undefined })
     const stop = (): void => {
       void this.killGroup(record, execId)
@@ -130,7 +133,7 @@ export class DockerSubprocessRuntime extends LocalSubprocessRuntime {
   override async spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
     const record = this.recordFor(spec.cwd)
     const execId = randomUUID()
-    const env = { ...containerEnv(spec.env), TERM: spec.terminalType }
+    const env = { ...containerEnv(this.workspaces.environmentFor(record.sessionId)), ...containerEnv(spec.env), TERM: spec.terminalType }
     const argv = ['docker', ...this.workspaces.execArgv(record, supervisedArgv(execId, containerArgv(spec.argv)), spec.cwd, env, true)]
     const handle = await super.spawnTerminal({ ...spec, argv, cwd: this.workspaces.config.dataDir, env: undefined })
     const terminate = async (): Promise<void> => {

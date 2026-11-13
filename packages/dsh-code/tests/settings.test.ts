@@ -6,6 +6,7 @@ const good: CodeSettings = {
   network: 'allowlist', allow: ['GitHub.com', '*.npmjs.org', 'github.com'], privateAllow: ['Registry.local:5000'], ports: [443, 80, 443],
   cpus: 1.5, memoryMb: 2048, pids: 256, tmpMb: 512, maxWorkspaces: 4, workerImage: 'ghcr.io/acme/worker:1.0@sha256:' + 'a'.repeat(64), previewPorts: [5173, 3000],
   disabledAccounts: ['gvieiracit', 'gvieiracit'], newBranch: true,
+  shmMb: 256, readOnlyWorkspace: false, dependencyCache: true, readOnlyFolders: ['/srv/datasets', '/srv/datasets'], environment: ['NODE_ENV=test', '# comment', 'NODE_ENV=development'], lockdown: false,
 }
 
 describe('Settings > Code validation', () => {
@@ -13,6 +14,7 @@ describe('Settings > Code validation', () => {
     expect(validateSettings(good)).toEqual({
       ...good, allow: ['github.com', '*.npmjs.org'], privateAllow: ['registry.local:5000'], ports: [80, 443], previewPorts: [3000, 5173],
       disabledAccounts: ['gvieiracit'],
+      readOnlyFolders: ['/srv/datasets'], environment: ['NODE_ENV=development'],
     })
     expect(validateSettings({ ...good, workerImage: 'dsh-code-worker:0.2.0' }).workerImage).toBe('dsh-code-worker:0.2.0')
   })
@@ -33,6 +35,12 @@ describe('Settings > Code validation', () => {
     [{ disabledAccounts: ['not a login'] }, /disabledAccounts/],
     [{ disabledAccounts: 'gabrielbav' }, /disabledAccounts/],
     [{ newBranch: 'yes' }, /newBranch/],
+    [{ shmMb: 8 }, /shmMb/],
+    [{ lockdown: 'on' }, /lockdown/],
+    [{ readOnlyFolders: ['/etc'] }, /readOnlyFolders/],
+    [{ readOnlyFolders: ['relative/path'] }, /readOnlyFolders/],
+    [{ environment: ['GITHUB_TOKEN=x'] }, /environment/],
+    [{ environment: ['not a line'] }, /environment/],
   ] as const)('rejects %o', (patch, message) => {
     expect(() => validateSettings({ ...good, ...patch } as unknown as CodeSettings)).toThrowError(message)
   })

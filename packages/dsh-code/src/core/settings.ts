@@ -5,6 +5,8 @@
  */
 import { normalizeHost } from '../egress/policy.ts'
 import type { CodeSettings } from '../types.ts'
+import { environmentLines, EnvironmentError, parseEnvironment } from './environment.ts'
+import { unsafeFolderReason } from './mounts.ts'
 
 /** Structured validation failure naming the field. */
 export class SettingsError extends Error {
@@ -60,6 +62,22 @@ export function validateSettings(input: CodeSettings): CodeSettings {
     return login
   }))]
   if (typeof input.newBranch !== 'boolean') throw new SettingsError('newBranch', 'must be true or false')
+  for (const field of ['readOnlyWorkspace', 'dependencyCache', 'lockdown'] as const) {
+    if (typeof input[field] !== 'boolean') throw new SettingsError(field, 'must be true or false')
+  }
+  if (!Array.isArray(input.readOnlyFolders) || input.readOnlyFolders.length > 32) throw new SettingsError('readOnlyFolders', 'must be a list of at most 32 folders')
+  const readOnlyFolders = [...new Set(input.readOnlyFolders.map((folder) => {
+    const reason = typeof folder === 'string' ? unsafeFolderReason(folder) : 'must be a path'
+    if (reason !== undefined) throw new SettingsError('readOnlyFolders', `"${String(folder)}": ${reason}`)
+    return folder
+  }))]
+  if (!Array.isArray(input.environment)) throw new SettingsError('environment', 'must be a list of NAME=value lines')
+  let environment: string[]
+  try {
+    environment = environmentLines(parseEnvironment(input.environment))
+  } catch (error) {
+    throw new SettingsError('environment', error instanceof EnvironmentError ? error.message : String(error))
+  }
   return {
     network: input.network,
     allow,
@@ -74,11 +92,17 @@ export function validateSettings(input: CodeSettings): CodeSettings {
     previewPorts: ports('previewPorts', input.previewPorts),
     disabledAccounts,
     newBranch: input.newBranch,
+    shmMb: number('shmMb', input.shmMb, 16, 65536),
+    readOnlyWorkspace: input.readOnlyWorkspace,
+    dependencyCache: input.dependencyCache,
+    readOnlyFolders,
+    environment,
+    lockdown: input.lockdown,
   }
 }
 
 /** Config fields Settings > Code edits; all apply without restarting Harness. */
-export const SETTINGS_FIELDS = ['network', 'allow', 'privateAllow', 'ports', 'cpus', 'memoryMb', 'pids', 'tmpMb', 'maxWorkspaces', 'workerImage', 'previewPorts', 'disabledAccounts', 'newBranch'] as const satisfies ReadonlyArray<keyof CodeSettings>
+export const SETTINGS_FIELDS = ['network', 'allow', 'privateAllow', 'ports', 'cpus', 'memoryMb', 'pids', 'tmpMb', 'maxWorkspaces', 'workerImage', 'previewPorts', 'disabledAccounts', 'newBranch', 'shmMb', 'readOnlyWorkspace', 'dependencyCache', 'readOnlyFolders', 'environment', 'lockdown'] as const satisfies ReadonlyArray<keyof CodeSettings>
 
 /**
  * Whether two configs differ only in live-applicable settings.

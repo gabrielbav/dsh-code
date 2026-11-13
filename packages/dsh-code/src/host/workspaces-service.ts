@@ -18,9 +18,10 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import type {} from '@deepseek-ai/dsh-workspace'
-import { WorkspaceError, WorkspaceManager, type WorkspaceRecord } from '../core/workspaces.ts'
+import { WorkspaceError, WorkspaceManager, type WorkspaceManagerConfig, type WorkspaceRecord } from '../core/workspaces.ts'
+import { EnvironmentError, environmentLines, parseEnvironment } from '../core/environment.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { AccountRepositories, BranchList, GhAccount, ProvisionStep, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, BranchList, GhAccount, ProvisionStep, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
 import { PREVIEW_PREFIX, PreviewProxy } from './preview.ts'
 import { Git, gitRunner } from '../core/git.ts'
@@ -63,6 +64,12 @@ export interface Config {
   defaultAccount: string
   disabledAccounts: string[]
   newBranch: boolean
+  shmMb: number
+  readOnlyWorkspace: boolean
+  dependencyCache: boolean
+  readOnlyFolders: string[]
+  environment: string[]
+  lockdown: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -84,6 +91,12 @@ export const Config: z<Config> = z.object({
   previewPorts: z.array(z.number()).default([]).description('Container ports that may be opened as authenticated previews'),
   presetId: z.string().default('code'),
   disabledAccounts: z.array(z.string()).default([]).description('gh logins left out of the Repository menu'),
+  shmMb: z.number().default(256).description('/dev/shm size in MB; headless browsers need more than 64'),
+  readOnlyWorkspace: z.boolean().default(false).description('Mount checkouts read-only'),
+  dependencyCache: z.boolean().default(false).description('Keep a dependency cache per repository'),
+  readOnlyFolders: z.array(z.string()).default([]).description('Extra host folders mounted read-only at the same path'),
+  environment: z.array(z.string()).default([]).description('Default NAME=value variables for every Code session'),
+  lockdown: z.boolean().default(false).description('Network none, read-only workspace, no cache and no extra folders'),
   newBranch: z.boolean().default(true).description('Give each Code session its own dsh-code/<hash> branch; false works on the chosen branch'),
   defaultAccount: z.string().default('').description('GitHub account (gh login) new Code sessions use; empty uses the gh CLI active account'),
 })
@@ -135,6 +148,22 @@ function settingsOf(config: Config): CodeSettings {
     cpus: config.cpus, memoryMb: config.memoryMb, pids: config.pids, tmpMb: config.tmpMb, maxWorkspaces: config.maxWorkspaces,
     workerImage: config.workerImage, previewPorts: config.previewPorts,
     disabledAccounts: config.disabledAccounts, newBranch: config.newBranch,
+    shmMb: config.shmMb, readOnlyWorkspace: config.readOnlyWorkspace, dependencyCache: config.dependencyCache,
+    readOnlyFolders: config.readOnlyFolders, environment: config.environment, lockdown: config.lockdown,
+  }
+}
+
+/** Manager options derived from the row config; Lockdown is applied by the manager and the policy. */
+function sandboxOptions(config: Config): Pick<WorkspaceManagerConfig, 'shmMb' | 'readOnlyWorkspace' | 'dependencyCache' | 'readOnlyFolders' | 'lockdown' | 'environment'> {
+  let environment: Record<string, string> = {}
+  try {
+    environment = parseEnvironment(config.environment)
+  } catch {
+    // An invalid hand-edited list is refused by Settings; at load it is ignored rather than blocking Code.
+  }
+  return {
+    shmMb: config.shmMb, readOnlyWorkspace: config.readOnlyWorkspace, dependencyCache: config.dependencyCache,
+    readOnlyFolders: config.readOnlyFolders, lockdown: config.lockdown, environment,
   }
 }
 
@@ -168,8 +197,9 @@ export class CodeWorkspacesService extends TypertRemoteService {
       proxyDir: join(import.meta.dirname, '..', 'egress'),
       workerDir: join(import.meta.dirname, '..', '..', 'worker'),
       limits: { cpus: config.cpus, memoryMb: config.memoryMb, pids: config.pids, tmpMb: config.tmpMb },
-      policy: { mode: config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports },
+      policy: { mode: config.lockdown ? 'none' : config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports },
       uid: config.uid, gid: config.gid, maxWorkspaces: config.maxWorkspaces, previewPorts: config.previewPorts, newBranch: config.newBranch,
+      ...sandboxOptions(config),
     }, undefined, new Git(gitRunner('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'])),
     async account => this.github.credentials(account))
     this.previews = new PreviewProxy((sessionId, port) => this.manager.previewAddress(sessionId, port))
@@ -301,8 +331,17 @@ export class CodeWorkspacesService extends TypertRemoteService {
     const account = this.accountOf(sessionId)
     const login = account !== '' ? account : (await this.github.accounts().catch(() => [])).find(a => a.active)?.login
     const steps = await this.stepsOf(sessionId)
+    const applied = record?.options
+    const lockdown = applied?.lockdown ?? this.config.lockdown
+    const options = applied !== undefined
+      ? { readOnlyWorkspace: applied.readOnlyWorkspace, dependencyCache: applied.cacheDir !== undefined, readOnlyFolders: applied.readOnlyFolders, shmMb: applied.shmMb, lockdown }
+      : {
+        readOnlyWorkspace: lockdown || this.config.readOnlyWorkspace, dependencyCache: !lockdown && this.config.dependencyCache,
+        readOnlyFolders: lockdown ? [] : this.config.readOnlyFolders, shmMb: this.config.shmMb, lockdown,
+      }
     return {
       mode: 'code',
+      options,
       ...steps === undefined ? {} : { steps },
       ...workingDirectory === undefined ? {} : { workingDirectory },
       ...login === undefined ? {} : { account: login },
@@ -311,7 +350,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
           repository: record.repository.fullName, baseBranch: record.baseBranch, baseCommit: record.baseCommit,
           workingBranch: record.workingBranch, status: record.status,
           container: {
-            name: record.containerName, image: record.image, runtime: record.runtime, network: this.config.network,
+            name: record.containerName, image: record.image, runtime: record.runtime, network: lockdown ? 'none' : this.config.network,
             cpus: this.config.cpus, memoryMb: this.config.memoryMb,
           },
         }
@@ -334,7 +373,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
     this.manager.config.previewPorts = next.previewPorts
     this.manager.config.newBranch = next.newBranch
     this.listing = undefined
-    await this.manager.updatePolicy({ mode: next.network, allow: next.allow, privateAllow: next.privateAllow, ports: next.ports })
+    Object.assign(this.manager.config, sandboxOptions(next))
+    await this.manager.updatePolicy({ mode: next.lockdown ? 'none' : next.network, allow: next.allow, privateAllow: next.privateAllow, ports: next.ports })
     await this.manager.updateLimits({ cpus: next.cpus, memoryMb: next.memoryMb, pids: next.pids, tmpMb: next.tmpMb })
     this.selfTestReport = undefined
   }
@@ -534,6 +574,33 @@ export class CodeWorkspacesService extends TypertRemoteService {
         return { login, repositories: [], error: error instanceof Error ? error.message : String(error) }
       }
     }))
+  }
+
+  /**
+   * A session's variables: the Settings defaults and its own values.
+   * @param sessionId - session id.
+   * @returns both lists as NAME=value lines.
+   */
+  @Remote
+  async sessionVariables(sessionId: string): Promise<SessionVariables> {
+    return { defaults: environmentLines(this.manager.config.environment ?? {}), session: environmentLines(await this.manager.sessionEnvironment(sessionId)) }
+  }
+
+  /**
+   * Replace a session's own variables. They apply from the next command; a running command keeps its values.
+   * @param sessionId - session id.
+   * @param lines - NAME=value lines; credential-like names are refused.
+   * @returns the saved variables.
+   */
+  @Remote
+  async setSessionVariables(sessionId: string, lines: string[]): Promise<SessionVariables> {
+    try {
+      await this.manager.setSessionEnvironment(sessionId, parseEnvironment(lines))
+    } catch (error) {
+      if (error instanceof EnvironmentError) throw new RemoteError('code/failed', error.message, { reason: 'invalid-variable' })
+      throw remoteFailure(error)
+    }
+    return this.sessionVariables(sessionId)
   }
 
   /**

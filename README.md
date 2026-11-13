@@ -76,6 +76,15 @@ Use **Settings > Code**, or override the `code-workspaces` row in the profile's 
     previewPorts: []                # container ports that may be previewed, e.g. [3000, 5173]
 ```
 
+Settings > Code also has these sandbox options, all off or empty by default:
+
+- **Lockdown**: no network, a read-only workspace, no dependency cache and no extra folders, whatever else is set.
+- **Read-only workspace**: the agent can read and run code but cannot change files.
+- **Dependency cache**: npm, yarn, pip, uv, Go, Cargo, Gradle and Bun caches kept between sessions, one per repository, under `dataDir/caches`.
+- **Extra read-only folders**: mounted read-only at the same path in every workspace; refused and missing folders are skipped and shown in the provisioning timeline.
+- **Shared memory**: `/dev/shm` size, 256 MB by default (headless browsers need more than Docker's 64 MB).
+- **Environment variables**: defaults for every session in Settings, and per-session values in the Environment tab that override them by name. They apply from the agent's next command. Credential-like names are refused, because the agent can read every value.
+
 Settings > Code edits every field above except `dataDir`; those changes apply without restarting Harness. `/tmp` size and image changes reach a workspace when it restarts.
 
 `dataDir` defaults to `~/.dsh-code`, or to `/var/lib/dsh-code` when Harness runs as root: the container user must be able to enter it.
@@ -86,7 +95,7 @@ Settings > Code edits every field above except `dataDir`; those changes apply wi
 | --- | --- |
 | Runtime | Every workspace container is created with `--runtime runsc` and checked after start; the setup check confirms the container kernel is gVisor |
 | Privileges | Non-root user, `--cap-drop ALL`, `no-new-privileges`, read-only root filesystem, tmpfs `/tmp`, CPU, memory and process limits |
-| Docker socket and host files | Never mounted. The only bind mount is the session's own checkout, at the same path |
+| Docker socket and host files | Never mounted. By default the only bind mount is the session's own checkout, at the same path. Opt-in, off by default: a per-repository dependency cache (read-write, owned by the sandbox) and extra read-only folders; home roots, credential folders (`~/.ssh`, `~/.aws`, `~/.config/gh`, …), system folders, the Docker socket and the Code data folder are refused |
 | Processes | The preset's `ctx.subprocess` runs every command through `docker exec` in the session's container and refuses any directory outside a ready Code workspace |
 | File tools | The preset's `ctx.fs` runs every file operation inside the session's container, through a helper baked into the worker image (`/opt/dsh-code/fs-helper.js`, the Harness local backend bundled). Symlinks resolve in the container's mount namespace, so a link swapped by sandbox code cannot reach a host file. The host also refuses paths outside a ready workspace and checks every target the helper returns; watching polls inside the container |
 | Search | ripgrep runs in the container; the host's ripgrep path is mapped to the image's `rg` |
