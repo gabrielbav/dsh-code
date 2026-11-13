@@ -23,7 +23,7 @@ export const PREVIEW_PREFIX = '/dsh-code/preview'
 export const PREVIEW_TTL_MS = 8 * 60 * 60 * 1000
 
 /** Policy applied to every proxied response. */
-export const PREVIEW_CSP = 'sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads'
+export const PREVIEW_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads; frame-ancestors 'self'"
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host'])
 const STRIP_REQUEST = new Set([...HOP_BY_HOP, 'cookie', 'authorization', 'origin', 'referer'])

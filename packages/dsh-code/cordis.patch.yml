@@ -29,7 +29,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: You are a coding agent powered by the {{model}} model. You work in an isolated checkout of the user's repository on a dedicated branch; commands and file edits run inside that sandbox.
+              prefix: You are a coding agent powered by the {{model}} model. You work in an isolated checkout of the user's repository on a dedicated branch; commands and file edits run inside that sandbox. To show a web app, start it in the background listening on 0.0.0.0 and tell the user to open the Preview tab; never give localhost links, which point at the user's own computer, not the sandbox.
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
           - id: code-execution

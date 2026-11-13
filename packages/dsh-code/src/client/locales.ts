@@ -5,6 +5,12 @@ export const NS = 'dsh-code'
 
 export const en = {
   'dialog.title': 'Code mode',
+  'view.preview': 'Preview',
+  'previewTab.notCode': 'Preview shows a web app running in a Code mode session. Choose Code mode for this session to use it.',
+  'previewTab.notReady': 'The workspace starts with the first message. Then ask the agent to start the app on 0.0.0.0, and it appears here.',
+  'previewTab.reload': 'Reload',
+  'previewTab.isolated': 'Isolated from dsh and from this computer',
+  'previewTab.frameTitle': 'Preview of port {port}',
   'preview.nothingListening': 'Nothing in this workspace is listening on a port yet. Ask the agent to start the app on 0.0.0.0 (for example npm run dev -- --host 0.0.0.0, or python3 -m http.server 8000), then open Preview again.',
   'preview.notRunning': 'not running',
   'preview.localOnly': 'listens on 127.0.0.1 only; start it on 0.0.0.0',
@@ -168,6 +174,12 @@ export type CodeKey = keyof typeof en
 
 export const zh: Record<CodeKey, string> = {
   'dialog.title': '代码模式',
+  'view.preview': '预览',
+  'previewTab.notCode': '预览显示在代码模式会话中运行的 Web 应用。请为此会话选择代码模式。',
+  'previewTab.notReady': '工作区会在第一条消息时启动。然后让代理在 0.0.0.0 上启动应用，它就会显示在这里。',
+  'previewTab.reload': '重新加载',
+  'previewTab.isolated': '与 dsh 和本机隔离',
+  'previewTab.frameTitle': '端口 {port} 的预览',
   'preview.nothingListening': '此工作区中还没有程序在监听端口。请让代理在 0.0.0.0 上启动应用（例如 npm run dev -- --host 0.0.0.0，或 python3 -m http.server 8000），然后重新打开“预览”。',
   'preview.notRunning': '未运行',
   'preview.localOnly': '仅监听 127.0.0.1；请改为在 0.0.0.0 上启动',

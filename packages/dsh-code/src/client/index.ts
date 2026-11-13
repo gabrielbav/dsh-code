@@ -13,7 +13,7 @@ import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
 import type { AccountRepositories, GhAccount, PreviewTargets, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CodeSettingsSection, EnvironmentTab, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import { CodeSettingsSection, EnvironmentTab, PreviewTab, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -289,6 +289,19 @@ function register(ctx: Context): void {
     },
   }, EnvironmentTab as ComponentType<never>))
 
+  face.slots.inject('conversation.view', () => face.slots.register({
+    name: 'conversation.view', id: 'dsh-code.preview', order: 30, locale: NS,
+    label: () => t('view.preview'),
+    inject: (sessionId: string) => {
+      watch(sessionId)
+      return {
+        hooks: { view: viewOf(sessionId), presetIds }, sessionId,
+        targets: async () => outcome(await api().previewTargets(sessionId)),
+        open: async (port: number) => outcome(await api().previewUrl(sessionId, port)),
+      }
+    },
+  }, PreviewTab as ComponentType<never>))
+
   face.slots.inject('conversation.input.left', () => face.slots.register({
     name: 'conversation.input.left', id: 'dsh-code.selection', order: 10, locale: NS,
     inject: (sessionId: string) => {
@@ -331,8 +344,6 @@ function register(ctx: Context): void {
         const removal = await removeSession(sessionId)
         return removal === undefined ? result : { ok: false, message: removal } as const
       },
-      previewTargets: async () => outcome(await api().previewTargets(sessionId)),
-      preview: async (port: number) => outcome(await api().previewUrl(sessionId, port)),
     }),
   }, SessionActions as ComponentType<never>))
 

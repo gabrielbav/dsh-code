@@ -134,13 +134,12 @@ export interface ActionsInjected {
   readonly hooks: { readonly view: HostObservable<CodeSessionView | null> }
   readonly pendingWork: () => Promise<Outcome<PendingWork | null>>
   readonly remove: () => Promise<Outcome<void>>
-  readonly previewTargets: () => Promise<Outcome<PreviewTargets>>
-  readonly preview: (port: number) => Promise<Outcome<string>>
+
 }
 
 type Dialog =
   | { kind: 'delete'; pending: PendingWork | null } | { kind: 'message'; text: string }
-  | { kind: 'preview'; targets: PreviewTargets }
+
 
 /**
  * Format a byte count.
@@ -181,11 +180,11 @@ function ResourcesBody({ usage, t }: { readonly usage: () => Promise<Outcome<Wor
 }
 
 /**
- * Preview and Delete session actions for a Code session.
+ * The Delete session action for a Code session.
  * @param props - injected Remote calls, session view and translator.
  * @returns the action buttons and their dialogs, or nothing for other sessions.
  */
-export function SessionActions({ useView, pendingWork, remove, previewTargets, preview, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
+export function SessionActions({ useView, pendingWork, remove, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(value => value)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [busy, setBusy] = useState(false)
@@ -200,7 +199,6 @@ export function SessionActions({ useView, pendingWork, remove, previewTargets, p
   const ready = view.status === 'ready'
   return (
     <div style={row}>
-      <Button size="sm" disabled={!ready || busy} onClick={() => { void run(previewTargets, targets => ({ kind: 'preview', targets })) }}>{t('action.preview')}</Button>
       <Button size="sm" disabled={busy} onClick={() => { void run(pendingWork, pending => ({ kind: 'delete', pending })) }}>{t('action.delete')}</Button>
       <Modal
         open={dialog?.kind === 'delete'}
@@ -212,38 +210,6 @@ export function SessionActions({ useView, pendingWork, remove, previewTargets, p
           : t('delete.clean')}
         footer={<Button variant="primary" disabled={busy} onClick={() => { void run(remove, () => null) }}>{t('delete.confirm')}</Button>}
       />
-      <Modal open={dialog?.kind === 'preview'} onClose={close} closeLabel={t('action.close')} title={t('preview.title')} description={t('preview.note')}>
-        {dialog?.kind === 'preview' && (dialog.targets.targets.length === 0
-          ? <div style={note}>{t('preview.nothingListening')}</div>
-          : (
-            <div style={{ display: 'grid', gap: 8 }}>
-              {dialog.targets.targets.map(target => {
-                const openable = target.listening && !target.localOnly && target.allowed
-                const reason = !target.allowed ? t('preview.notAllowed') : !target.listening ? t('preview.notRunning') : target.localOnly ? t('preview.localOnly') : undefined
-                return (
-                  <div key={target.port} style={{ ...row, justifyContent: 'space-between' }}>
-                    <Button
-                      size="sm"
-                      disabled={busy || !openable}
-                      onClick={() => {
-                        // Open synchronously so the browser does not block the tab, then navigate it.
-                        const tab = window.open('about:blank', '_blank')
-                        void preview(target.port).then((r) => {
-                          if (r.ok && tab !== null) { tab.opener = null; tab.location.href = r.value }
-                          else { tab?.close(); setDialog({ kind: 'message', text: r.ok ? r.value : t('error.generic', { error: r.message }) }) }
-                        })
-                      }}
-                    >
-                      {`${t('preview.open')} :${target.port}`}
-                    </Button>
-                    {reason !== undefined && <span style={note}>{reason}</span>}
-                  </div>
-                )
-              })}
-              {dialog.targets.restricted && <div style={note}>{t('preview.restricted')}</div>}
-            </div>
-          ))}
-      </Modal>
       <Modal open={dialog?.kind === 'message'} onClose={close} closeLabel={t('action.close')} title={t('dialog.title')} description={dialog?.kind === 'message' ? dialog.text : ''} />
     </div>
   )
@@ -714,6 +680,98 @@ export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, 
         />
         {codeMode && <SessionVariablesEditor variables={variables} save={saveVariables} t={t} />}
       </div>
+    </div>
+  )
+}
+
+// ── Preview tab (conversation.view) ────────────────────────────────────────
+
+/** Injected face of the Preview tab. */
+export interface PreviewTabInjected {
+  readonly hooks: { readonly view: HostObservable<CodeSessionView | null>; readonly presetIds: HostObservable<ReadonlySet<string>> }
+  readonly sessionId: string
+  readonly targets: () => Promise<Outcome<PreviewTargets>>
+  readonly open: (port: number) => Promise<Outcome<string>>
+}
+
+/** The same capabilities the preview response grants through its CSP; never allow-same-origin. */
+const PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals allow-downloads'
+
+/**
+ * The app running in the Code workspace, embedded in this browser. It loads through the authenticated preview
+ * route (Harness to container, never the other way), in a sandboxed frame with an opaque origin, so the page
+ * cannot reach the dsh page, its storage or its token. Ports are found from what the workspace listens on.
+ * @param props - injected loaders, state and translator.
+ * @returns the preview.
+ */
+export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t }: InjectFace<PreviewTabInjected> & PropsLocale<typeof NS>): ReactNode {
+  const view = useView(v => v)
+  const codeMode = usePresetIds(ids => ids.has(sessionId))
+  const ready = view !== null && view.status === 'ready'
+  const [list, setList] = useState<PreviewTargets | null>(null)
+  const [port, setPort] = useState<number | null>(null)
+  const [src, setSrc] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [frameKey, setFrameKey] = useState(0)
+  useEffect(() => {
+    if (!ready) return
+    let live = true
+    const tick = (): void => {
+      void targets().then((r) => {
+        if (!live) return
+        if (r.ok) setList(r.value)
+        else setError(r.message)
+      })
+    }
+    tick()
+    const timer = setInterval(tick, 3000)
+    return () => { live = false; clearInterval(timer) }
+  }, [ready, targets])
+  const openable = (list?.targets ?? []).filter(p => p.listening && !p.localOnly && p.allowed)
+  // Pick the first open port by itself; keep the user's choice while it stays open.
+  useEffect(() => {
+    if (port !== null && openable.some(p => p.port === port)) return
+    setPort(openable[0]?.port ?? null)
+  }, [openable.map(p => p.port).join(','), port])
+  useEffect(() => {
+    if (port === null) { setSrc(null); return }
+    let live = true
+    setError(null)
+    void open(port).then((r) => {
+      if (!live) return
+      if (r.ok) setSrc(r.value)
+      else { setSrc(null); setError(r.message) }
+    })
+    return () => { live = false }
+  }, [port, open])
+  if (!codeMode) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notCode')}</div>
+  if (!ready) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notReady')}</div>
+  const blocked = (list?.targets ?? []).filter(p => !(p.listening && !p.localOnly && p.allowed))
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div style={{ ...row, padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-default, rgba(127,127,127,.25))' }}>
+        {openable.map(p => (
+          <Button key={p.port} size="sm" variant={p.port === port ? 'primary' : 'outline'} onClick={() => { setPort(p.port) }}>{`:${p.port}`}</Button>
+        ))}
+        {port !== null && <Button size="sm" variant="outline" onClick={() => { setFrameKey(k => k + 1) }}>{t('previewTab.reload')}</Button>}
+        {blocked.map(p => (
+          <span key={p.port} style={note}>{`:${p.port} ${!p.allowed ? t('preview.notAllowed') : !p.listening ? t('preview.notRunning') : t('preview.localOnly')}`}</span>
+        ))}
+        <span style={{ ...note, marginLeft: 'auto' }}>{t('previewTab.isolated')}</span>
+      </div>
+      {error !== null && <div style={{ ...note, padding: 12 }} role="alert">{t('error.generic', { error })}</div>}
+      {src === null
+        ? <div style={{ ...note, padding: 16 }}>{list === null ? t('picker.loading') : t('preview.nothingListening')}</div>
+        : (
+          <iframe
+            key={`${src}#${frameKey}`}
+            title={t('previewTab.frameTitle', { port: String(port) })}
+            src={src}
+            sandbox={PREVIEW_SANDBOX}
+            referrerPolicy="no-referrer"
+            style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
+          />
+        )}
     </div>
   )
 }
