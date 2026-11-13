@@ -105,14 +105,8 @@ export interface SessionEnvironment {
   }
   /** Provisioning steps of the latest start, oldest first. */
   readonly steps?: readonly ProvisionStep[]
-  readonly container?: {
-    readonly name: string
-    readonly image: string
-    readonly runtime: string
-    readonly network: string
-    readonly cpus: number
-    readonly memoryMb: number
-  }
+  /** Egress mode (allowlist, none or open); host layout details are never sent to the browser. */
+  readonly network?: string
 }
 
 /** Point-in-time resource usage of one workspace container. */

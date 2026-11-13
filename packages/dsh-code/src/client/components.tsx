@@ -254,7 +254,7 @@ const value: CSSProperties = { margin: 0, fontFamily: 'var(--dsw-font-mono, ui-m
  * @param props - environment loader, current workspace status and translator.
  * @returns the details.
  */
-function EnvironmentPanel({ load, status, t }: { readonly load: () => Promise<Outcome<SessionEnvironment>>; readonly status: string; readonly t: T }): ReactNode {
+function EnvironmentPanel({ load, status, side, t }: { readonly load: () => Promise<Outcome<SessionEnvironment>>; readonly status: string; readonly side?: ReactNode; readonly t: T }): ReactNode {
   const [env, setEnv] = useState<SessionEnvironment | null>(null)
   const [error, setError] = useState<string | null>(null)
   const settling = env === null || (env.steps !== undefined && env.steps.length > 0 && !['ready', 'failed'].includes(env.steps[env.steps.length - 1]!.step))
@@ -273,28 +273,29 @@ function EnvironmentPanel({ load, status, t }: { readonly load: () => Promise<Ou
   }, [load, status, settling])
   if (error !== null) return <div style={note} role="alert">{t('error.generic', { error })}</div>
   if (env === null) return <div style={note}>{t('picker.loading')}</div>
-  const rows: [string, string | undefined][] = [
-    [t('env.runs'), env.mode === 'host' ? t('env.host') : t('env.code')],
-    [t('env.account'), env.account],
-    [t('env.repository'), env.repository],
-    [t('env.baseBranch'), env.baseBranch],
-    [t('env.baseCommit'), env.baseCommit?.slice(0, 12)],
-    [t('env.workingBranch'), env.workingBranch],
-    [t('env.status'), env.status],
-    [t('env.directory'), env.workingDirectory],
-    [t('env.container'), env.container?.name],
-    [t('env.runtime'), env.container === undefined ? undefined : `${env.container.runtime} (gVisor)`],
-    [t('env.image'), env.container?.image],
-    [t('env.network'), env.container === undefined ? undefined : t('env.networkValue', { mode: env.container.network })],
-    [t('env.limits'), env.container === undefined ? undefined : t('env.limitsValue', { cpus: String(env.container.cpus), memory: String(env.container.memoryMb) })],
-    [t('env.lockdown'), env.options === undefined ? undefined : env.options.lockdown ? t('env.on') : t('env.off')],
-    [t('env.readOnlyWorkspace'), env.options === undefined ? undefined : env.options.readOnlyWorkspace ? t('env.on') : t('env.off')],
-    [t('env.dependencyCache'), env.options === undefined ? undefined : env.options.dependencyCache ? t('env.on') : t('env.off')],
-    [t('env.readOnlyFolders'), env.options === undefined || env.options.readOnlyFolders.length === 0 ? undefined : env.options.readOnlyFolders.join('\n')],
-    [t('env.shm'), env.options === undefined ? undefined : `${env.options.shmMb} MB`],
-  ]
+  const options = env.options
+  const sandbox = options === undefined ? undefined : [
+    `${t('env.lockdown')}: ${options.lockdown ? t('env.on') : t('env.off')}`,
+    `${t('env.readOnlyWorkspace')}: ${options.readOnlyWorkspace ? t('env.on') : t('env.off')}`,
+    `${t('env.dependencyCache')}: ${options.dependencyCache ? t('env.on') : t('env.off')}`,
+    ...options.readOnlyFolders.length === 0 ? [] : [t('env.foldersCount', { count: String(options.readOnlyFolders.length) })],
+  ].join(' · ')
+  const rows: [string, string | undefined][] = env.mode === 'host'
+    ? [[t('env.runs'), t('env.host')], [t('env.directory'), env.workingDirectory]]
+    : [
+      [t('env.runs'), t('env.code')],
+      [t('env.account'), env.account],
+      [t('env.repository'), env.repository],
+      [t('env.baseBranch'), env.baseBranch],
+      [t('env.baseCommit'), env.baseCommit?.slice(0, 12)],
+      [t('env.workingBranch'), env.workingBranch],
+      [t('env.status'), env.status],
+      [t('env.network'), env.network === undefined ? undefined : t('env.networkValue', { mode: env.network })],
+      [t('env.sandbox'), sandbox],
+    ]
   return (
     <div style={{ display: 'grid', gap: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 24, alignItems: 'start' }}>
       <dl style={grid}>
         {rows.filter((row): row is [string, string] => row[1] !== undefined && row[1] !== '').map(([k, v]) => (
           <div key={k} style={{ display: 'contents' }}>
@@ -303,6 +304,8 @@ function EnvironmentPanel({ load, status, t }: { readonly load: () => Promise<Ou
           </div>
         ))}
       </dl>
+      {side}
+      </div>
       {env.steps !== undefined && env.steps.length > 0 && <ProvisionSteps steps={env.steps} t={t} />}
     </div>
   )
@@ -377,6 +380,8 @@ function ProvisionSteps({ steps, t }: { readonly steps: readonly ProvisionStep[]
 export interface SettingsInjected {
   readonly load: () => Promise<Outcome<CodeSettingsView>>
   readonly accounts: () => Promise<Outcome<GhAccount[]>>
+  /** The Harness folder picker (in-app browser on the web, native dialog on desktop); null when cancelled or unavailable. */
+  readonly pickFolder?: () => Promise<string | null>
   readonly save: (settings: CodeSettings) => Promise<Outcome<CodeSettingsView>>
 }
 
@@ -421,7 +426,7 @@ export function fromDraft(draft: Draft): CodeSettings {
  * @param props - injected load/save and translator.
  * @returns the settings page.
  */
-export function CodeSettingsSection({ load, save, accounts, t }: SettingsInjected & PropsLocale<typeof NS>): ReactNode {
+export function CodeSettingsSection({ load, save, accounts, pickFolder, t }: SettingsInjected & PropsLocale<typeof NS>): ReactNode {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [logins, setLogins] = useState<GhAccount[] | null>(null)
   const [accountsError, setAccountsError] = useState<string | null>(null)
@@ -518,6 +523,24 @@ export function CodeSettingsSection({ load, save, accounts, t }: SettingsInjecte
         {toggle('readOnlyWorkspace', t('settings.readOnlyWorkspaceHint'))}
         {toggle('dependencyCache', t('settings.dependencyCacheHint'))}
         {area('readOnlyFolders')}
+        {pickFolder !== undefined && (
+          <div style={row}>
+            <Button
+              size="sm"
+              variant="outline"
+              type="button"
+              onClick={() => {
+                void pickFolder().then((folder) => {
+                  if (folder === null || folder === '') return
+                  const current = draft.readOnlyFolders.split('\n').map(x => x.trim()).filter(x => x !== '')
+                  if (!current.includes(folder)) setDraft({ ...draft, readOnlyFolders: [...current, folder].join('\n') })
+                })
+              }}
+            >
+              {t('settings.addFolder')}
+            </Button>
+          </div>
+        )}
         <div style={note} role="note">{t('settings.readOnlyFoldersHint')}</div>
       </fieldset>
       <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 6 }}>
@@ -671,14 +694,18 @@ export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, 
   return (
     <div style={{ padding: '16px 24px', overflow: 'auto', height: '100%', boxSizing: 'border-box' }}>
       <div style={{ maxWidth: 960, display: 'grid', gap: 24 }}>
-        <EnvironmentPanel load={load} status={`${status}:${view?.repository ?? ''}:${view?.baseBranch ?? ''}:${String(codeMode)}`} t={t} />
+        <EnvironmentPanel
+          load={load}
+          status={`${status}:${view?.repository ?? ''}:${view?.baseBranch ?? ''}:${String(codeMode)}`}
+          side={view !== null && view.status !== 'pending' ? (
+            <section>
+              <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('resources.title')}</h3>
+              <ResourcesBody usage={usage} t={t} />
+            </section>
+          ) : undefined}
+          t={t}
+        />
         {codeMode && <SessionVariablesEditor variables={variables} save={saveVariables} t={t} />}
-        {view !== null && view.status !== 'pending' && (
-          <section>
-            <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('resources.title')}</h3>
-            <ResourcesBody usage={usage} t={t} />
-          </section>
-        )}
       </div>
     </div>
   )

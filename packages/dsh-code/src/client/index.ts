@@ -344,6 +344,15 @@ function register(ctx: Context): void {
     inject: () => ({
       load: async () => outcome(await api().settings()),
       accounts: async () => outcome(await api().ghAccounts()),
+      pickFolder: async () => {
+        try {
+          const ws = ctx.get('uiWorkspace' as never) as { pickDirectory?(): Promise<string | null> } | undefined
+          return ws?.pickDirectory === undefined ? null : await ws.pickDirectory()
+        } catch {
+          // No picker in this Harness, or the context was replaced; the list stays editable by hand.
+          return null
+        }
+      },
       save: async (settings: CodeSettings) => outcome(await api().updateSettings(settings)),
     }),
   }, CodeSettingsSection as ComponentType<never>))

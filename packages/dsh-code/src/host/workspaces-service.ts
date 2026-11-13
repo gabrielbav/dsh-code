@@ -339,20 +339,18 @@ export class CodeWorkspacesService extends TypertRemoteService {
         readOnlyWorkspace: lockdown || this.config.readOnlyWorkspace, dependencyCache: !lockdown && this.config.dependencyCache,
         readOnlyFolders: lockdown ? [] : this.config.readOnlyFolders, shmMb: this.config.shmMb, lockdown,
       }
+    // The host's folder layout, container name, runtime and image stay on the host: the tab shows what the
+    // session works on and how it is fenced, not where things live.
     return {
       mode: 'code',
       options,
+      network: lockdown ? 'none' : this.config.network,
       ...steps === undefined ? {} : { steps },
-      ...workingDirectory === undefined ? {} : { workingDirectory },
       ...login === undefined ? {} : { account: login },
       ...record !== undefined
         ? {
           repository: record.repository.fullName, baseBranch: record.baseBranch, baseCommit: record.baseCommit,
           workingBranch: record.workingBranch, status: record.status,
-          container: {
-            name: record.containerName, image: record.image, runtime: record.runtime, network: lockdown ? 'none' : this.config.network,
-            cpus: this.config.cpus, memoryMb: this.config.memoryMb,
-          },
         }
         : selection !== undefined
           ? { repository: selection.repository.fullName, baseBranch: selection.baseBranch, status: 'pending' }
