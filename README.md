@@ -6,8 +6,9 @@ Docs: [spec](docs/spec.md) · [validation and decisions](docs/validation.md) · 
 
 ## What you get
 
-- **A Chat | Code switch** at the top of the sidebar. Code mode lists only Code sessions; Chat mode hides them.
-- **Repository and branch pickers** on a new Code session. The branch defaults to the repository's default branch.
+- **"Code mode" in the Harness mode selector.** Choosing it on a new session starts a blank Code session in the "Code" Workspace, so Code sessions group under one sidebar entry. Switching to another mode before the first message drops the session's Code choices.
+- **Repository and Branch in the composer's + menu** (also `/repository` and `/branch`), shown only on a Code mode session. Repository lists the repositories of every account the host's `gh` CLI is signed in with, grouped by account; the group you pick from is the account that clones, pushes and opens the pull request. The branch defaults to the repository's default branch. The row in use is marked "in use". A status line above the composer names the choice until the workspace is ready.
+- **An Environment tab** beside Chat and Trajectory: where the session runs. For a Code session: GitHub account, repository, base branch and commit, working branch, workspace status, container, runtime, image, network policy and limits.
 - **One gVisor container and one checkout per session.** The first message waits until the workspace is ready; follow-up messages reuse it. Parallel sessions never share a writable filesystem.
 - **The normal chat.** Models, approvals, streaming, skills and history are Harness's own. The `code` agent preset only swaps where bash and the file tools execute.
 - **Session actions:** Diff against the pinned base commit, Create PR (commit, push the session branch, open the PR), Restart workspace, Delete workspace (warns about uncommitted or unpushed work first). Archiving a Code session also deletes its workspace. Remote branches and pull requests are never deleted.
@@ -15,8 +16,8 @@ Docs: [spec](docs/spec.md) · [validation and decisions](docs/validation.md) · 
 ## Requirements
 
 - Linux with Docker Engine and the gVisor `runsc` runtime registered with Docker. There is no fallback to ordinary Docker: Code stays disabled and shows the failing checks until gVisor works.
-- The GitHub CLI (`gh`) signed in on the host. It lists repositories and branches, and Git uses it as the credential helper for cloning and pushing. No token enters a container.
-- DeepSeek Harness with the `sidebar.mode` slot and `uiWorkspace.registerSessionFilter` (gabrielbav/deepseek-harness PR #2). Without them, Code works but the switch and the sidebar filter are absent.
+- The GitHub CLI (`gh`) signed in on the host, with one or more accounts. Each Code session uses one of them: dsh-code reads that account's token with `gh auth token --user` and passes it as `GH_TOKEN` to the host `gh` and `git` processes of that session only, so the gh CLI's own active account is never used implicitly. No token enters a container. `defaultAccount` in the `code-workspaces` config picks the account a session starts with; empty uses the gh CLI's active account.
+- DeepSeek Harness 0.2.2 or later. Code uses only documented extension points (agent presets, `conversation.view`, `conversation.input.dock`, `conversation.session.header.actions`, `ctx.commandUi`); no Harness changes are needed.
 - The worker image, built once:
 
 ```sh
@@ -85,8 +86,9 @@ The `code` preset omits tools that would act from the host on the agent's behalf
 
 - **File-tool race.** The confined filesystem re-checks every path just before each host system call, but a process inside the container can still swap a symlink in between. The fix is to run file operations inside the container too.
 - **Host-configured MCP servers** are Harness-wide and run on the host as before. Repository-defined MCP servers are not started for Code sessions.
-- **Repository listing** uses `gh api user/repos`. When listing fails, the picker accepts a typed `owner/name`.
-- **Linux only so far.** macOS (Colima) and Windows (WSL2) need gVisor inside the VM and are untested.
+- **Repository listing** uses `gh api user/repos` for each signed-in account, in parallel; the listing is reused for 30 seconds. An account whose listing fails shows its error in its own group.
+- **Choices before the first message live in memory.** The repository, branch and account picked for a blank session are lost if Harness restarts before the first message; the session stays in Code mode. A provisioned workspace is recorded under `dataDir`.
+- **Linux is the supported host.** On macOS with Colima (virtiofs), the container sees the shared checkout as owned by root, so the sandbox user cannot write to it: reads and commands work, writes fail. The egress proxy's code is copied into `dataDir` because the VM cannot read `~/Documents`. Windows (WSL2) is untested.
 - **Not implemented yet:** a Settings > Code page (configuration goes through `cordis.patch.yml`), a resource usage view, authenticated application previews, Remote Control, and team deployment.
 
 ## Develop
@@ -107,7 +109,7 @@ packages/dsh-code/
   src/core/      Docker CLI, container spec, workspace manager, host Git, GitHub CLI
   src/egress/    egress policy and proxy (runs in its own container)
   src/host/      Harness plugins: codeWorkspaces service, Docker subprocess, confined fs
-  src/client/    Web UI: mode switch, pickers, status line, session actions
+  src/client/    Web UI: + menu rows, status line, Environment tab, session actions
   worker/        worker image Dockerfile
   cordis.patch.yml  bundle rows and the `code` preset
 ```

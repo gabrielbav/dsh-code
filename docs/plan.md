@@ -5,7 +5,7 @@ Status of [spec.md](spec.md) as implemented in this repository, and the open wor
 ## Repositories
 
 - **gabrielbav/dsh-code (this repo):** all Code plugin code, docs and tests.
-- **gabrielbav/deepseek-harness:** upstream-only, generic changes. PR #2 (`ccr-93d95a6e-jccvo1`) adds the `sidebar.mode` slot and `uiWorkspace.registerSessionFilter`. Nothing Code-specific goes there.
+- **gabrielbav/deepseek-harness:** upstream-only, generic changes. Code no longer needs any: the mode selector replaced the `sidebar.mode` switch and session filter of PR #3 (formerly #2). Nothing Code-specific goes there.
 
 ## Done
 
@@ -18,7 +18,9 @@ Status of [spec.md](spec.md) as implemented in this repository, and the open wor
 | Egress: allowlist, no direct IP/IPv6/private/metadata, DNS rebinding, policy reload closes tunnels, no worker DNS | `src/egress/*` | unit + live tests |
 | Container-backed `ctx.subprocess`, workspace-confined `ctx.fs`, `code` preset | `src/host/*`, `cordis.patch.yml` | real Web app run |
 | Source control: repos, branches, pinned base, unique branch, diff, commit, push, PR, via host `gh` | `src/core/github.ts`, `src/core/git.ts` | live tests (push), real app (clone) |
-| UI: Chat/Code switch, sidebar filter, repo/branch pickers, status line, Diff / Create PR / Restart / Delete | `src/client/*` | real Web app run, screenshots |
+| UI: Code mode in the mode selector, + menu Repository (grouped by gh account) and Branch, status line, Environment tab, Diff / Create PR / Restart / Delete | `src/client/*` | real Web app run |
+| Per-session GitHub account: token passed to host `gh`/`git` only, stored in the workspace record | `src/core/github.ts`, `src/core/workspaces.ts` | real `gh` with four accounts |
+| Code mode read from the Harness on every check (`agentPresets.composedPreset` / `presetForSession`), so it survives restarts | `CodeWorkspacesService.isCodeMode` | real Web app run |
 | First message held until provisioned; working directory moved into the checkout | `CodeWorkspacesService.hold` | real Web app run |
 
 The real-app run: fork built from source, this bundle packed and added with `dsh plugin --profile web add <tgz>`, mock model from `packages/test-support/llm-mock-server` scripting one `bash` call. The tool result showed `Starting gVisor`, `uid=1000`, the checkout path, the `dsh-code/...` branch, no Docker socket, and `example.org` blocked.
@@ -61,7 +63,8 @@ Ordered by priority. Each item lists the goal, the approach, and how to verify i
 
 ### 8. macOS and Windows
 - **Goal:** spec §8.2.
-- **Approach:** Colima (macOS) and WSL2 (Windows) with `runsc` inside the VM; check the bind-mount path mapping and the container user's access to `dataDir`.
+- **Approach:** Colima (macOS) and WSL2 (Windows) with `runsc` inside the VM.
+- **Found on macOS (Colima 0.10, vz + virtiofs, runsc release-20261109.0):** the VM cannot read `~/Documents` (fixed: the proxy code is copied into `dataDir`); `/var/folders` temp dirs are not shared, so run `test:docker` with `TMPDIR` under `$HOME`; inside gVisor the shared checkout reads as owned by `0:0` while `runc` shows the host uid, so the sandbox user cannot write (`--directfs=false` and `--overlay2=none` do not change it). Next: try Colima `mountType: sshfs`.
 
 ### 9. Remote Control (spec §11, Phase 4)
 - **Goal:** open and control a locally running Code session from an online Harness, without moving execution.
