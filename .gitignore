@@ -5,3 +5,5 @@ lib/
 coverage/
 *.tgz
 **/worker/fs-helper.js
+packages/dsh-code/README.md
+packages/dsh-code/LICENSE

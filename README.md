@@ -2,7 +2,7 @@
 
 Code mode for [DeepSeek Harness](https://github.com/gabrielbav/deepseek-harness): pick a repository and a branch, chat as usual, and every command and file edit the agent makes runs in an isolated Docker + gVisor workspace on its own branch.
 
-Docs: [spec](docs/spec.md) · [validation and decisions](docs/validation.md) · [plan and open work](docs/plan.md)
+Docs: [spec](https://github.com/gabrielbav/dsh-code/blob/main/docs/spec.md) · [validation and decisions](https://github.com/gabrielbav/dsh-code/blob/main/docs/validation.md) · [plan and open work](https://github.com/gabrielbav/dsh-code/blob/main/docs/plan.md)
 
 ## What you get
 
@@ -37,7 +37,15 @@ sudo systemctl reload docker
 
 ## Install
 
-Build and pack the bundle, then add the tarball to a profile:
+From npm, in the Web UI (**Settings > Plugins > Add plugin**, `@gabrielbav/dsh-code`) or from the CLI:
+
+```sh
+dsh plugin --profile web add @gabrielbav/dsh-code
+```
+
+Then choose **Code mode** in the mode selector. If a setup check fails, the notice above the composer says how to fix it; its **Build worker image** action builds `dsh-code-worker:0.2.0` from the Dockerfile shipped in the package.
+
+From source, build and pack the bundle, then add the tarball to a profile:
 
 ```sh
 pnpm install && pnpm run build
@@ -98,7 +106,7 @@ The `code` preset omits tools that would act from the host on the agent's behalf
 - **Repository listing** uses `gh api user/repos` for each signed-in account, in parallel; the listing is reused for 30 seconds. An account whose listing fails shows its error in its own group.
 - **Choices before the first message live in memory.** The repository, branch and account picked for a blank session are lost if Harness restarts before the first message; the session stays in Code mode. A provisioned workspace is recorded under `dataDir`.
 - **Linux is the supported host.** On macOS with Colima (virtiofs), the container sees the shared checkout as owned by root, so the sandbox user cannot write to it: reads and commands work, writes fail. The egress proxy's code is copied into `dataDir` because the VM cannot read `~/Documents`. Windows (WSL2) is untested.
-- **Not implemented yet:** Remote Control and team deployment (see [plan](docs/plan.md)); a published, digest-pinned worker image (build it locally).
+- **Not implemented yet:** Remote Control and team deployment (see [plan](https://github.com/gabrielbav/dsh-code/blob/main/docs/plan.md)); a published, digest-pinned worker image (build it locally).
 
 ## Develop
 
