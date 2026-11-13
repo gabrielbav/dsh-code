@@ -8,7 +8,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { mkdirSync, realpathSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
@@ -244,6 +244,53 @@ export class CodeWorkspacesService extends TypertRemoteService {
       this.previews.revoke(sessionId)
       void this.manager.delete(sessionId).catch((error: unknown) => { ctx.logger('dsh-code').warn('cleanup of %s failed: %s', sessionId, String(error)) })
     }), 'dsh-code: delete workspace on archive')
+    // A session deleted outright (the session-delete plugin, or anything else) must not leave its container, checkout
+    // and mirror behind: clean up on the removal event once the session is really gone, and sweep at startup and every
+    // few minutes for removals this plugin never heard about (deleted while Harness was down, or by another plugin).
+    const removals = ctx as unknown as { on(name: 'api-session/removed', listener: (sessionId: string) => void): () => void }
+    ctx.effect(() => removals.on('api-session/removed', (sessionId) => { void this.collect([String(sessionId)]) }), 'dsh-code: delete workspace of a deleted session')
+    ctx.effect(() => {
+      const first = setTimeout(() => { void this.collect() }, 30_000)
+      const every = setInterval(() => { void this.collect() }, 5 * 60_000)
+      return () => { clearTimeout(first); clearInterval(every) }
+    }, 'dsh-code: sweep workspaces of deleted sessions')
+  }
+
+  /**
+   * Whether a session no longer exists anywhere: not live, and the session store clearly reports no such session.
+   * Any doubt (no store, a failed lookup) keeps the workspace.
+   */
+  private async sessionGone(sessionId: string): Promise<boolean> {
+    const live = (name: string): boolean => {
+      try { return (this.ctx.get(name as never) as { get?(id: string): unknown } | undefined)?.get?.(sessionId) !== undefined } catch { return true }
+    }
+    if (live('agents') || live('sessions')) return false
+    const store = this.ctx.get('sessionPersistence' as never) as { stat?(id: string): Promise<unknown> } | undefined
+    if (store?.stat === undefined) return false
+    try {
+      return await store.stat(sessionId) === undefined
+    } catch {
+      // The store could not answer; keep the workspace and try again on the next sweep.
+      return false
+    }
+  }
+
+  /**
+   * Delete the workspaces of sessions that no longer exist.
+   * @param candidates - session ids to check; all recorded workspaces when omitted.
+   */
+  private async collect(candidates?: readonly string[]): Promise<void> {
+    const ids = candidates ?? this.manager.list().map(r => r.sessionId)
+    for (const sessionId of ids) {
+      if (this.manager.get(sessionId) === undefined && !this.steps.has(sessionId)) continue
+      if (!(await this.sessionGone(sessionId))) continue
+      this.previews.revoke(sessionId)
+      this.selections.delete(sessionId)
+      this.steps.delete(sessionId)
+      await rm(this.stepsPath(sessionId), { force: true }).catch(() => undefined)
+      await this.manager.delete(sessionId).catch((error: unknown) => { this.ctx.logger('dsh-code').warn('cleanup of deleted session %s failed: %s', sessionId, String(error)) })
+      this.ctx.logger('dsh-code').info('removed the workspace of deleted session %s', sessionId)
+    }
   }
 
   private hold(agent: Agent): void {
