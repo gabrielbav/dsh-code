@@ -54,10 +54,8 @@ export function gitRunner(binary = 'git', prefix: readonly string[] = []): GitRu
  * @param random - entropy source (tests pass a fixed value).
  * @returns `dsh-code/<base>-<session8>-<rand4>`.
  */
-export function workingBranchName(baseBranch: string, sessionId: string, random: () => string = () => randomBytes(2).toString('hex')): string {
-  const base = baseBranch.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'main'
-  const session = sessionId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase()
-  return `dsh-code/${base}-${session}-${random()}`
+export function workingBranchName(random: () => string = () => randomBytes(6).toString('hex')): string {
+  return `dsh-code/${random()}`
 }
 
 /** Result of preparing a checkout. */
@@ -106,7 +104,8 @@ export class Git {
   async prepareCheckout(repo: RepositoryRef, baseBranch: string, path: string, workingBranch: string): Promise<Checkout> {
     await this.run(['clone', '--branch', baseBranch, '--single-branch', '--no-tags', '--', repo.cloneUrl, path])
     const baseCommit = await this.run(['rev-parse', 'HEAD'], path)
-    await this.run(['checkout', '-b', workingBranch, baseCommit], path)
+    // Working on the chosen branch itself (newBranch off) needs no new branch.
+    if (workingBranch !== baseBranch) await this.run(['checkout', '-b', workingBranch, baseCommit], path)
     return { path, baseBranch, baseCommit, workingBranch }
   }
 

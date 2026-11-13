@@ -4,9 +4,9 @@
  * plugin. Copy comes from the `dsh-code` locale namespace.
  */
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import { Button, Input, Modal, SegmentedControl } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -104,7 +104,8 @@ export function WorkspaceStatusLine({ useView, usePresetIds, sessionId, t }: Inj
   const view = useView(value => value)
   const codeMode = usePresetIds(ids => ids.has(sessionId))
   if (view === null) return null
-  if (view.status === 'pending' && !codeMode) return null
+  // The choice itself is shown beside the + button (SelectionLabel).
+  if (view.status === 'pending') return null
   const text = statusText(view, t)
   if (text === undefined) return null
   return <div style={note} role="status" aria-live="polite">{text}</div>
@@ -112,7 +113,7 @@ export function WorkspaceStatusLine({ useView, usePresetIds, sessionId, t }: Inj
 
 function statusText(view: CodeSessionView, t: T): string | undefined {
   switch (view.status) {
-    case 'pending': return t('status.pending', { repository: view.repository, branch: view.baseBranch })
+    case 'pending': return undefined
     case 'created':
     case 'provisioning': return t('status.provisioning')
     case 'restarting': return t('status.restarting')
@@ -340,10 +341,12 @@ export function EnvironmentView({ useView, usePresetIds, load, t }: InjectFace<E
 /** Injected face of the settings page. */
 export interface SettingsInjected {
   readonly load: () => Promise<Outcome<CodeSettingsView>>
+  readonly accounts: () => Promise<Outcome<GhAccount[]>>
   readonly save: (settings: CodeSettings) => Promise<Outcome<CodeSettingsView>>
 }
 
-type Draft = Record<'allow' | 'privateAllow' | 'ports' | 'previewPorts' | 'cpus' | 'memoryMb' | 'pids' | 'tmpMb' | 'maxWorkspaces' | 'workerImage', string> & { network: CodeSettings['network'] }
+type Draft = Record<'allow' | 'privateAllow' | 'ports' | 'previewPorts' | 'cpus' | 'memoryMb' | 'pids' | 'tmpMb' | 'maxWorkspaces' | 'workerImage', string>
+  & { network: CodeSettings['network']; disabledAccounts: readonly string[]; newBranch: boolean }
 
 function toDraft(settings: CodeSettings): Draft {
   return {
@@ -352,6 +355,7 @@ function toDraft(settings: CodeSettings): Draft {
     ports: settings.ports.join(', '), previewPorts: settings.previewPorts.join(', '),
     cpus: String(settings.cpus), memoryMb: String(settings.memoryMb), pids: String(settings.pids), tmpMb: String(settings.tmpMb),
     maxWorkspaces: String(settings.maxWorkspaces), workerImage: settings.workerImage,
+    disabledAccounts: settings.disabledAccounts, newBranch: settings.newBranch,
   }
 }
 
@@ -368,6 +372,7 @@ export function fromDraft(draft: Draft): CodeSettings {
     ports: numbers(draft.ports), previewPorts: numbers(draft.previewPorts),
     cpus: Number(draft.cpus), memoryMb: Number(draft.memoryMb), pids: Number(draft.pids), tmpMb: Number(draft.tmpMb),
     maxWorkspaces: Number(draft.maxWorkspaces), workerImage: draft.workerImage.trim(),
+    disabledAccounts: draft.disabledAccounts, newBranch: draft.newBranch,
   }
 }
 
@@ -376,8 +381,19 @@ export function fromDraft(draft: Draft): CodeSettings {
  * @param props - injected load/save and translator.
  * @returns the settings page.
  */
-export function CodeSettingsSection({ load, save, t }: SettingsInjected & PropsLocale<typeof NS>): ReactNode {
+export function CodeSettingsSection({ load, save, accounts, t }: SettingsInjected & PropsLocale<typeof NS>): ReactNode {
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [logins, setLogins] = useState<GhAccount[] | null>(null)
+  const [accountsError, setAccountsError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void accounts().then((r) => {
+      if (!live) return
+      if (r.ok) setLogins(r.value)
+      else setAccountsError(r.message)
+    })
+    return () => { live = false }
+  }, [accounts])
   const [writable, setWritable] = useState(true)
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -391,7 +407,7 @@ export function CodeSettingsSection({ load, save, t }: SettingsInjected & PropsL
     return () => { live = false }
   }, [load, t])
   if (draft === null) return <div style={note}>{message ?? t('picker.loading')}</div>
-  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow'>, type: 'text' | 'number' = 'text'): ReactNode => (
+  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow' | 'disabledAccounts' | 'newBranch'>, type: 'text' | 'number' = 'text'): ReactNode => (
     <label style={{ display: 'grid', gap: 4 }}>
       <span style={note}>{t(`settings.${key}`)}</span>
       <Input aria-label={t(`settings.${key}`)} type={type} value={draft[key]} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }) }} />
@@ -445,6 +461,34 @@ export function CodeSettingsSection({ load, save, t }: SettingsInjected & PropsL
         {field('tmpMb', 'number')}
         {field('maxWorkspaces', 'number')}
       </fieldset>
+      <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+        <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.accounts')}</legend>
+        <div style={note}>{t('settings.accountsHint')}</div>
+        {accountsError !== null && <div style={note} role="alert">{t('error.generic', { error: accountsError })}</div>}
+        {logins === null && accountsError === null && <div style={note}>{t('picker.loading')}</div>}
+        {logins?.length === 0 && <div style={note}>{t('settings.noAccounts')}</div>}
+        {logins?.map(({ login }) => (
+          <div key={login} style={{ ...row, justifyContent: 'space-between', maxWidth: 420 }}>
+            <span>{login}</span>
+            <Switch
+              label={t('settings.accountToggle', { login })}
+              checked={!draft.disabledAccounts.includes(login)}
+              onChange={(on) => {
+                const rest = draft.disabledAccounts.filter(l => l !== login)
+                setDraft({ ...draft, disabledAccounts: on ? rest : [...rest, login] })
+              }}
+            />
+          </div>
+        ))}
+      </fieldset>
+      <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+        <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.branches')}</legend>
+        <div style={{ ...row, justifyContent: 'space-between', maxWidth: 420 }}>
+          <span>{t('settings.newBranch')}</span>
+          <Switch label={t('settings.newBranch')} checked={draft.newBranch} onChange={(newBranch) => { setDraft({ ...draft, newBranch }) }} />
+        </div>
+        <div style={note}>{draft.newBranch ? t('settings.newBranchOn') : t('settings.newBranchOff')}</div>
+      </fieldset>
       {field('workerImage')}
       {field('previewPorts')}
       <div style={row}>
@@ -452,5 +496,31 @@ export function CodeSettingsSection({ load, save, t }: SettingsInjected & PropsL
         {message !== null && <span style={note} role="status" aria-live="polite">{message}</span>}
       </div>
     </form>
+  )
+}
+
+// ── Choice beside the + button (conversation.input.left) ───────────────────
+
+/** Injected face of the repository label. */
+export interface SelectionInjected {
+  readonly hooks: { readonly view: HostObservable<CodeSessionView | null>; readonly presetIds: HostObservable<ReadonlySet<string>> }
+  readonly sessionId: string
+}
+
+/**
+ * `owner/name on branch` beside the composer's + button while a Code mode session has a choice and no
+ * workspace yet. Gone once the first message starts the workspace.
+ * @param props - injected state and translator.
+ * @returns the label, or nothing.
+ */
+export function SelectionLabel({ useView, usePresetIds, sessionId, t }: InjectFace<SelectionInjected> & PropsLocale<typeof NS>): ReactNode {
+  const view = useView(v => v)
+  const codeMode = usePresetIds(ids => ids.has(sessionId))
+  if (!codeMode || view === null || view.status !== 'pending') return null
+  const text = t('selection.label', { repository: view.repository, branch: view.baseBranch })
+  return (
+    <span title={text} style={{ fontSize: 12, opacity: 0.7, alignSelf: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280 }}>
+      {text}
+    </span>
   )
 }

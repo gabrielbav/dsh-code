@@ -120,10 +120,19 @@ export interface CodeSettings {
   readonly maxWorkspaces: number
   readonly workerImage: string
   readonly previewPorts: readonly number[]
+  /** gh logins left out of the Repository menu. */
+  readonly disabledAccounts: readonly string[]
+  /** Give each session its own `dsh-code/<hash>` branch; off works on the chosen branch itself. */
+  readonly newBranch: boolean
 }
 
 /** Settings plus whether they can be saved to the profile. */
 export interface CodeSettingsView {
   readonly settings: CodeSettings
   readonly writable: boolean
+}
+
+/** One account the host's gh CLI is signed in with, for Settings > Code. */
+export interface GhAccount {
+  readonly login: string
 }

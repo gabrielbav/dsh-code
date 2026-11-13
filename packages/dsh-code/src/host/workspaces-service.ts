@@ -20,7 +20,7 @@ import type {} from '@deepseek-ai/dsh-working-directory'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { WorkspaceError, WorkspaceManager, type WorkspaceRecord } from '../core/workspaces.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { AccountRepositories, BranchList, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, BranchList, GhAccount, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
 import { PREVIEW_PREFIX, PreviewProxy } from './preview.ts'
 import { Git, gitRunner } from '../core/git.ts'
@@ -61,6 +61,8 @@ export interface Config {
   previewPorts: number[]
   presetId: string
   defaultAccount: string
+  disabledAccounts: string[]
+  newBranch: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -81,6 +83,8 @@ export const Config: z<Config> = z.object({
   ports: z.array(z.number()).default([80, 443]),
   previewPorts: z.array(z.number()).default([]).description('Container ports that may be opened as authenticated previews'),
   presetId: z.string().default('code'),
+  disabledAccounts: z.array(z.string()).default([]).description('gh logins left out of the Repository menu'),
+  newBranch: z.boolean().default(true).description('Give each Code session its own dsh-code/<hash> branch; false works on the chosen branch'),
   defaultAccount: z.string().default('').description('GitHub account (gh login) new Code sessions use; empty uses the gh CLI active account'),
 })
 
@@ -130,6 +134,7 @@ function settingsOf(config: Config): CodeSettings {
     network: config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports,
     cpus: config.cpus, memoryMb: config.memoryMb, pids: config.pids, tmpMb: config.tmpMb, maxWorkspaces: config.maxWorkspaces,
     workerImage: config.workerImage, previewPorts: config.previewPorts,
+    disabledAccounts: config.disabledAccounts, newBranch: config.newBranch,
   }
 }
 
@@ -162,7 +167,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
       workerDir: join(import.meta.dirname, '..', '..', 'worker'),
       limits: { cpus: config.cpus, memoryMb: config.memoryMb, pids: config.pids, tmpMb: config.tmpMb },
       policy: { mode: config.network, allow: config.allow, privateAllow: config.privateAllow, ports: config.ports },
-      uid: config.uid, gid: config.gid, maxWorkspaces: config.maxWorkspaces, previewPorts: config.previewPorts,
+      uid: config.uid, gid: config.gid, maxWorkspaces: config.maxWorkspaces, previewPorts: config.previewPorts, newBranch: config.newBranch,
     }, undefined, new Git(gitRunner('git', ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'])),
     async account => this.github.credentials(account))
     this.previews = new PreviewProxy((sessionId, port) => this.manager.previewAddress(sessionId, port))
@@ -276,6 +281,8 @@ export class CodeWorkspacesService extends TypertRemoteService {
     this.manager.config.image = next.workerImage
     this.manager.config.maxWorkspaces = next.maxWorkspaces
     this.manager.config.previewPorts = next.previewPorts
+    this.manager.config.newBranch = next.newBranch
+    this.listing = undefined
     await this.manager.updatePolicy({ mode: next.network, allow: next.allow, privateAllow: next.privateAllow, ports: next.ports })
     await this.manager.updateLimits({ cpus: next.cpus, memoryMb: next.memoryMb, pids: next.pids, tmpMb: next.tmpMb })
     this.selfTestReport = undefined
@@ -468,13 +475,27 @@ export class CodeWorkspacesService extends TypertRemoteService {
     } catch (error) {
       throw remoteFailure(error)
     }
-    return Promise.all(accounts.map(async ({ login }) => {
+    const disabled = new Set(this.config.disabledAccounts)
+    return Promise.all(accounts.filter(a => !disabled.has(a.login)).map(async ({ login }) => {
       try {
         return { login, repositories: await (await this.githubAs(login)).repositories(undefined) }
       } catch (error) {
         return { login, repositories: [], error: error instanceof Error ? error.message : String(error) }
       }
     }))
+  }
+
+  /**
+   * Accounts the host's gh CLI is signed in with, for Settings > Code.
+   * @returns logins in gh's order.
+   */
+  @Remote
+  async ghAccounts(): Promise<GhAccount[]> {
+    try {
+      return (await this.github.accounts()).map(a => ({ login: a.login }))
+    } catch (error) {
+      throw remoteFailure(error)
+    }
   }
 
   /**
@@ -589,6 +610,9 @@ export class CodeWorkspacesService extends TypertRemoteService {
   async createPullRequest(sessionId: string, title: string, body: string): Promise<string> {
     const record = this.manager.get(sessionId)
     if (record === undefined) throw new RemoteError('code/failed', 'not a Code session', { reason: 'not-found' })
+    if (record.workingBranch === record.baseBranch) {
+      throw new RemoteError('code/failed', `this session works directly on ${record.baseBranch}; turn on "Always create a new branch" in Settings > Code to open pull requests`, { reason: 'same-branch' })
+    }
     try {
       await this.manager.commitAndPush(sessionId, title)
       return await (await this.githubAs(record.account ?? '')).createPullRequest(record.repository.fullName, record.workingBranch, record.baseBranch, title, body)

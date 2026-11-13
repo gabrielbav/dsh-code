@@ -59,6 +59,8 @@ export interface WorkspaceManagerConfig {
   maxWorkspaces: number
   /** Container ports the user may preview through the authenticated Harness route. */
   previewPorts: readonly number[]
+  /** New `dsh-code/<hash>` branch per session (default); false works on the base branch itself. */
+  newBranch?: boolean
   /**
    * Prefix of every Docker name and the owner label value this manager uses. Two managers with
    * different namespaces never see or remove each other's containers and networks (the live tests
@@ -368,7 +370,7 @@ export class WorkspaceManager {
     let record: WorkspaceRecord
     if (prior === undefined) {
       onProgress('resolving-revision')
-      const workingBranch = workingBranchName(baseBranch, sessionId)
+      const workingBranch = this.config.newBranch === false ? baseBranch : workingBranchName()
       await mkdir(join(this.config.dataDir, 'workspaces'), { recursive: true })
       await mkdir(join(this.config.dataDir, 'mirrors'), { recursive: true })
       onProgress('cloning')

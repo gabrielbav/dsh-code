@@ -54,6 +54,12 @@ export function validateSettings(input: CodeSettings): CodeSettings {
     return `${match[1]!.toLowerCase()}:${Number(match[2])}`
   }))]
   if (typeof input.workerImage !== 'string' || !IMAGE.test(input.workerImage)) throw new SettingsError('workerImage', 'is not a Docker image reference')
+  if (!Array.isArray(input.disabledAccounts) || input.disabledAccounts.length > 64) throw new SettingsError('disabledAccounts', 'must be a list of at most 64 GitHub logins')
+  const disabledAccounts = [...new Set(input.disabledAccounts.map((login) => {
+    if (typeof login !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login)) throw new SettingsError('disabledAccounts', `"${String(login)}" is not a GitHub login`)
+    return login
+  }))]
+  if (typeof input.newBranch !== 'boolean') throw new SettingsError('newBranch', 'must be true or false')
   return {
     network: input.network,
     allow,
@@ -66,11 +72,13 @@ export function validateSettings(input: CodeSettings): CodeSettings {
     maxWorkspaces: number('maxWorkspaces', input.maxWorkspaces, 1, 1024),
     workerImage: input.workerImage,
     previewPorts: ports('previewPorts', input.previewPorts),
+    disabledAccounts,
+    newBranch: input.newBranch,
   }
 }
 
 /** Config fields Settings > Code edits; all apply without restarting Harness. */
-export const SETTINGS_FIELDS = ['network', 'allow', 'privateAllow', 'ports', 'cpus', 'memoryMb', 'pids', 'tmpMb', 'maxWorkspaces', 'workerImage', 'previewPorts'] as const satisfies ReadonlyArray<keyof CodeSettings>
+export const SETTINGS_FIELDS = ['network', 'allow', 'privateAllow', 'ports', 'cpus', 'memoryMb', 'pids', 'tmpMb', 'maxWorkspaces', 'workerImage', 'previewPorts', 'disabledAccounts', 'newBranch'] as const satisfies ReadonlyArray<keyof CodeSettings>
 
 /**
  * Whether two configs differ only in live-applicable settings.

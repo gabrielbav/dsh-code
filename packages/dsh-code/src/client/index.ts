@@ -13,9 +13,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { AccountRepositories, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, GhAccount, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CodeSettingsSection, EnvironmentView, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import { CodeSettingsSection, EnvironmentView, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -34,6 +34,7 @@ interface CodeRemote {
   repositories(query: string | null, sessionId: string | null): Promise<Result<RepositorySummary[]>>
   branches(repository: string, sessionId: string | null): Promise<Result<BranchList>>
   repositoriesByAccount(): Promise<Result<AccountRepositories[]>>
+  ghAccounts(): Promise<Result<GhAccount[]>>
   environment(sessionId: string): Promise<Result<SessionEnvironment>>
   select(sessionId: string, repository: string, baseBranch: string | null, account: string | null): Promise<Result<CodeSessionView>>
   sessions(): Promise<Result<CodeSessionView[]>>
@@ -295,6 +296,14 @@ function register(ctx: Context): void {
     },
   }, EnvironmentView as ComponentType<never>))
 
+  face.slots.inject('conversation.input.left', () => face.slots.register({
+    name: 'conversation.input.left', id: 'dsh-code.selection', order: 10, locale: NS,
+    inject: (sessionId: string) => {
+      watch(sessionId)
+      return { hooks: { view: viewOf(sessionId), presetIds }, sessionId }
+    },
+  }, SelectionLabel as ComponentType<never>))
+
   face.slots.inject('conversation.input.dock', () => face.slots.register({
     name: 'conversation.input.dock', id: 'dsh-code.setup', order: 15, locale: NS,
     inject: (sessionId: string) => {
@@ -346,6 +355,7 @@ function register(ctx: Context): void {
     label: () => face.locale.bind(NS)('settings.nav'),
     inject: () => ({
       load: async () => outcome(await api().settings()),
+      accounts: async () => outcome(await api().ghAccounts()),
       save: async (settings: CodeSettings) => outcome(await api().updateSettings(settings)),
     }),
   }, CodeSettingsSection as ComponentType<never>))

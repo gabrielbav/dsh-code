@@ -5,12 +5,14 @@ import type { CodeSettings } from '../src/types.ts'
 const good: CodeSettings = {
   network: 'allowlist', allow: ['GitHub.com', '*.npmjs.org', 'github.com'], privateAllow: ['Registry.local:5000'], ports: [443, 80, 443],
   cpus: 1.5, memoryMb: 2048, pids: 256, tmpMb: 512, maxWorkspaces: 4, workerImage: 'ghcr.io/acme/worker:1.0@sha256:' + 'a'.repeat(64), previewPorts: [5173, 3000],
+  disabledAccounts: ['gvieiracit', 'gvieiracit'], newBranch: true,
 }
 
 describe('Settings > Code validation', () => {
   it('normalizes valid settings', () => {
     expect(validateSettings(good)).toEqual({
       ...good, allow: ['github.com', '*.npmjs.org'], privateAllow: ['registry.local:5000'], ports: [80, 443], previewPorts: [3000, 5173],
+      disabledAccounts: ['gvieiracit'],
     })
     expect(validateSettings({ ...good, workerImage: 'dsh-code-worker:0.2.0' }).workerImage).toBe('dsh-code-worker:0.2.0')
   })
@@ -28,6 +30,9 @@ describe('Settings > Code validation', () => {
     [{ maxWorkspaces: 0 }, /maxWorkspaces/],
     [{ workerImage: 'evil image; rm -rf /' }, /workerImage/],
     [{ previewPorts: [70000] }, /previewPorts/],
+    [{ disabledAccounts: ['not a login'] }, /disabledAccounts/],
+    [{ disabledAccounts: 'gabrielbav' }, /disabledAccounts/],
+    [{ newBranch: 'yes' }, /newBranch/],
   ] as const)('rejects %o', (patch, message) => {
     expect(() => validateSettings({ ...good, ...patch } as unknown as CodeSettings)).toThrowError(message)
   })
