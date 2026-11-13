@@ -77,6 +77,11 @@
                   watch: false
               - id: tool-skill
                 name: '@deepseek-ai/dsh-tool-skill'
+          # Background jobs (a dev server, a watcher): the job record lives in the Host-wide jobs service, while the
+          # process itself is started by the bash tool above, inside the container. This row only gives the agent
+          # job_output, job_list and job_kill; it registers nothing Host-wide.
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
           - id: command-goal
             name: '@deepseek-ai/dsh-command-goal'
           - id: tool-goal
