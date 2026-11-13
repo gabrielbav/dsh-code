@@ -591,7 +591,14 @@ async function copyRegularFile(source: string, destination: string): Promise<voi
   }
 }
 
-async function chownTree(path: string, uid: number, gid: number): Promise<void> {
+/**
+ * Give a fresh checkout to the sandbox user when Harness runs as root; a no-op otherwise.
+ * Exported for the root-only regression test.
+ * @param path - checkout root.
+ * @param uid - sandbox uid.
+ * @param gid - sandbox gid.
+ */
+export async function chownTree(path: string, uid: number, gid: number): Promise<void> {
   if (process.getuid?.() !== 0) return
   await chown(path, uid, gid)
   for (const entry of await readdir(path, { withFileTypes: true, recursive: true })) {

@@ -34,6 +34,27 @@ function connectThrough(proxyPort: number, authority: string): Promise<{ status:
 }
 
 describe('egress proxy', () => {
+  it('refuses connections beyond its cap before doing any work', async () => {
+    const proxy = createEgressProxy({ policy: () => ({ mode: 'allowlist', allow: [], privateAllow: [], ports: [] }), resolve: async () => [], maxConnections: 2 })
+    const port = await listen(proxy.server)
+    owned.push(proxy)
+    const open = (): Promise<import('node:net').Socket> => new Promise((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => { resolve(socket) })
+      socket.once('error', reject)
+    })
+    const held = [await open(), await open()]
+    // A third socket is accepted by the kernel, then closed by the server without a single byte.
+    const third = await open()
+    const closed = await new Promise<{ bytes: number }>((resolve) => {
+      let bytes = 0
+      third.on('data', (chunk) => { bytes += chunk.length })
+      third.once('close', () => { resolve({ bytes }) })
+      third.write('CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n')
+    })
+    expect(closed.bytes).toBe(0)
+    for (const socket of held) socket.destroy()
+  })
+
   it('tunnels an approved CONNECT to the checked address', async () => {
     const ctx = await setup({ mode: 'allowlist', allow: ['example.test'], privateAllow: [], ports: [] }, async () => ['127.0.0.1'])
     // Loopback is private, so the test approves it explicitly as a private destination.
