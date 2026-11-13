@@ -134,15 +134,13 @@ export interface ActionsInjected {
   readonly hooks: { readonly view: HostObservable<CodeSessionView | null> }
   readonly pendingWork: () => Promise<Outcome<PendingWork | null>>
   readonly remove: () => Promise<Outcome<void>>
-  readonly environment: () => Promise<Outcome<SessionEnvironment>>
-  readonly usage: () => Promise<Outcome<WorkspaceUsage | null>>
   readonly previewPorts: () => Promise<Outcome<readonly number[]>>
   readonly preview: (port: number) => Promise<Outcome<string>>
 }
 
 type Dialog =
   | { kind: 'delete'; pending: PendingWork | null } | { kind: 'message'; text: string }
-  | { kind: 'environment' } | { kind: 'preview'; ports: readonly number[] }
+  | { kind: 'preview'; ports: readonly number[] }
 
 /**
  * Format a byte count.
@@ -183,11 +181,11 @@ function ResourcesBody({ usage, t }: { readonly usage: () => Promise<Outcome<Wor
 }
 
 /**
- * Environment, Preview and Delete session actions for a Code session.
+ * Preview and Delete session actions for a Code session.
  * @param props - injected Remote calls, session view and translator.
  * @returns the action buttons and their dialogs, or nothing for other sessions.
  */
-export function SessionActions({ useView, pendingWork, remove, environment, usage, previewPorts, preview, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
+export function SessionActions({ useView, pendingWork, remove, previewPorts, preview, t }: InjectFace<ActionsInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(value => value)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [busy, setBusy] = useState(false)
@@ -202,7 +200,6 @@ export function SessionActions({ useView, pendingWork, remove, environment, usag
   const ready = view.status === 'ready'
   return (
     <div style={row}>
-      <Button size="sm" disabled={busy} onClick={() => { setDialog({ kind: 'environment' }) }}>{t('action.environment')}</Button>
       <Button size="sm" disabled={!ready || busy} onClick={() => { void run(previewPorts, ports => ({ kind: 'preview', ports })) }}>{t('action.preview')}</Button>
       <Button size="sm" disabled={busy} onClick={() => { void run(pendingWork, pending => ({ kind: 'delete', pending })) }}>{t('action.delete')}</Button>
       <Modal
@@ -215,17 +212,6 @@ export function SessionActions({ useView, pendingWork, remove, environment, usag
           : t('delete.clean')}
         footer={<Button variant="primary" disabled={busy} onClick={() => { void run(remove, () => null) }}>{t('delete.confirm')}</Button>}
       />
-      <Modal open={dialog?.kind === 'environment'} onClose={close} closeLabel={t('action.close')} title={t('env.title')}>
-        {dialog?.kind === 'environment' && (
-          <div style={{ width: 'min(720px, 80vw)', display: 'grid', gap: 20 }}>
-            <EnvironmentPanel load={environment} status={view.status} t={t} />
-            <section>
-              <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('resources.title')}</h3>
-              <ResourcesBody usage={usage} t={t} />
-            </section>
-          </div>
-        )}
-      </Modal>
       <Modal open={dialog?.kind === 'preview'} onClose={close} closeLabel={t('action.close')} title={t('preview.title')} description={t('preview.note')}>
         {dialog?.kind === 'preview' && (dialog.ports.length === 0
           ? <div style={note}>{t('preview.none')}</div>
@@ -566,5 +552,40 @@ export function SelectionLabel({ useView, usePresetIds, sessionId, t }: InjectFa
     <span title={text} style={{ fontSize: 12, opacity: 0.7, alignSelf: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280 }}>
       {text}
     </span>
+  )
+}
+
+// ── Environment tab (conversation.view) ────────────────────────────────────
+
+/** Injected face of the Environment tab. */
+export interface EnvironmentTabInjected {
+  readonly hooks: { readonly view: HostObservable<CodeSessionView | null>; readonly presetIds: HostObservable<ReadonlySet<string>> }
+  readonly sessionId: string
+  readonly load: () => Promise<Outcome<SessionEnvironment>>
+  readonly usage: () => Promise<Outcome<WorkspaceUsage | null>>
+}
+
+/**
+ * The Environment tab beside Chat and Trajectory: where the session runs and, for a Code session, its account,
+ * repository, branches, container, network and limits, the provisioning timeline and live resource usage.
+ * @param props - injected loaders, state and translator.
+ * @returns the tab content.
+ */
+export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, t }: InjectFace<EnvironmentTabInjected> & PropsLocale<typeof NS>): ReactNode {
+  const view = useView(v => v)
+  const codeMode = usePresetIds(ids => ids.has(sessionId))
+  const status = view?.status ?? (codeMode ? 'none' : 'host')
+  return (
+    <div style={{ padding: '16px 24px', overflow: 'auto', height: '100%', boxSizing: 'border-box' }}>
+      <div style={{ maxWidth: 960, display: 'grid', gap: 24 }}>
+        <EnvironmentPanel load={load} status={`${status}:${view?.repository ?? ''}:${view?.baseBranch ?? ''}:${String(codeMode)}`} t={t} />
+        {view !== null && view.status !== 'pending' && (
+          <section>
+            <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>{t('resources.title')}</h3>
+            <ResourcesBody usage={usage} t={t} />
+          </section>
+        )}
+      </div>
+    </div>
   )
 }

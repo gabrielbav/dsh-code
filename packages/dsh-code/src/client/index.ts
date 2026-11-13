@@ -15,7 +15,7 @@ import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
 import type { AccountRepositories, GhAccount, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CodeSettingsSection, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
+import { CodeSettingsSection, EnvironmentTab, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -305,6 +305,19 @@ function register(ctx: Context): void {
   })
 
 
+  face.slots.inject('conversation.view', () => face.slots.register({
+    name: 'conversation.view', id: 'dsh-code.environment', order: 20, locale: NS,
+    label: () => t('view.environment'),
+    inject: (sessionId: string) => {
+      watch(sessionId)
+      return {
+        hooks: { view: viewOf(sessionId), presetIds }, sessionId,
+        load: async () => outcome(await api().environment(sessionId)),
+        usage: async () => outcome(await api().usage(sessionId)),
+      }
+    },
+  }, EnvironmentTab as ComponentType<never>))
+
   face.slots.inject('conversation.input.left', () => face.slots.register({
     name: 'conversation.input.left', id: 'dsh-code.selection', order: 10, locale: NS,
     inject: (sessionId: string) => {
@@ -338,7 +351,6 @@ function register(ctx: Context): void {
     inject: (sessionId: string) => ({
       hooks: { view: viewOf(sessionId) },
       pendingWork: async () => outcome(await api().pendingWork(sessionId)),
-      environment: async () => outcome(await api().environment(sessionId)),
       // Delete removes the workspace, then the session: permanently through the session-delete plugin when
       // it is installed, otherwise by archiving it (the Harness's own removal; its history stays recoverable).
       remove: async () => {
@@ -348,7 +360,6 @@ function register(ctx: Context): void {
         const removal = await removeSession(sessionId)
         return removal === undefined ? result : { ok: false, message: removal } as const
       },
-      usage: async () => outcome(await api().usage(sessionId)),
       previewPorts: async () => {
         const result = outcome(await api().settings())
         return result.ok ? { ok: true, value: result.value.settings.previewPorts } as const : result
