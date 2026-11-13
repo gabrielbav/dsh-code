@@ -239,6 +239,15 @@ export class WorkspaceManager {
     await mkdir(this.recordsDir, { recursive: true })
     // A running proxy reloads this file, so a policy saved while Harness was down applies now.
     await this.updatePolicy(this.config.policy)
+    await mkdir(join(this.config.dataDir, 'overrides'), { recursive: true, mode: 0o700 })
+    for (const file of await readdir(join(this.config.dataDir, 'overrides'))) {
+      if (!file.endsWith('.json')) continue
+      try {
+        this.overrides.set(file.slice(0, -5), JSON.parse(await readFile(join(this.config.dataDir, 'overrides', file), 'utf8')) as Record<string, boolean>)
+      } catch {
+        // A damaged overrides file is ignored; the session follows Settings.
+      }
+    }
     // Session variables are read by every exec, which is synchronous; load them before any command runs.
     await mkdir(join(this.config.dataDir, 'env'), { recursive: true, mode: 0o700 })
     for (const file of await readdir(join(this.config.dataDir, 'env'))) {
@@ -467,6 +476,28 @@ export class WorkspaceManager {
   }
 
   private readonly sessionEnv = new Map<string, Record<string, string>>()
+  private readonly overrides = new Map<string, Record<string, boolean>>()
+  private overridesPath(sessionId: string): string { return join(this.config.dataDir, 'overrides', `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`) }
+
+  /**
+   * A session's overrides of Settings > Code (absent fields follow Settings).
+   * @param sessionId - logical session id.
+   * @returns the saved overrides.
+   */
+  sessionOverrides(sessionId: string): Readonly<Record<string, boolean>> {
+    return this.overrides.get(sessionId) ?? {}
+  }
+
+  /**
+   * Replace a session's overrides; saved under dataDir/overrides.
+   * @param sessionId - logical session id.
+   * @param values - boolean overrides by name.
+   */
+  async setSessionOverrides(sessionId: string, values: Readonly<Record<string, boolean>>): Promise<void> {
+    await mkdir(join(this.config.dataDir, 'overrides'), { recursive: true, mode: 0o700 })
+    await writeFile(this.overridesPath(sessionId), JSON.stringify(values), { mode: 0o600 })
+    this.overrides.set(sessionId, { ...values })
+  }
   private envPath(sessionId: string): string { return join(this.config.dataDir, 'env', `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`) }
 
   /**
@@ -669,6 +700,8 @@ export class WorkspaceManager {
   async delete(sessionId: string): Promise<void> {
     this.sessionEnv.delete(sessionId)
     await rm(this.envPath(sessionId), { force: true })
+    this.overrides.delete(sessionId)
+    await rm(this.overridesPath(sessionId), { force: true })
     const record = this.records.get(sessionId)
     if (record === undefined) return
     await this.setStatus(record, 'deleting')

@@ -11,7 +11,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ComponentType } from 'react'
 import remote from '@gabrielbav/dsh-code/remote'
-import type { AccountRepositories, GhAccount, PreviewTargets, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, GhAccount, PreviewTargets, SessionOverrides, SessionOverridesView, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, RepositorySummary, BranchList, PendingWork, SelfTestReport, PushResult, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { IconBranchOutlineRegular, IconFolderOpenOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CodeSettingsSection, EnvironmentTab, PreviewTab, SelectionLabel, SessionActions, SetupNotice, WorkspaceStatusLine, type Outcome } from './components.tsx'
 import { cell, sameIds, type Cell } from './store.ts'
@@ -32,6 +32,8 @@ interface CodeRemote {
   repositoriesByAccount(): Promise<Result<AccountRepositories[]>>
   ghAccounts(): Promise<Result<GhAccount[]>>
   previewTargets(sessionId: string): Promise<Result<PreviewTargets>>
+  sessionOverrides(sessionId: string): Promise<Result<SessionOverridesView>>
+  setSessionOverrides(sessionId: string, overrides: SessionOverrides): Promise<Result<SessionOverridesView>>
   sessionVariables(sessionId: string): Promise<Result<SessionVariables>>
   setSessionVariables(sessionId: string, lines: string[]): Promise<Result<SessionVariables>>
   environment(sessionId: string): Promise<Result<SessionEnvironment>>
@@ -285,6 +287,8 @@ function register(ctx: Context): void {
         usage: async () => outcome(await api().usage(sessionId)),
         variables: async () => outcome(await api().sessionVariables(sessionId)),
         saveVariables: async (lines: string[]) => outcome(await api().setSessionVariables(sessionId, lines)),
+        overrides: async () => outcome(await api().sessionOverrides(sessionId)),
+        saveOverrides: async (overrides: SessionOverrides) => outcome(await api().setSessionOverrides(sessionId, overrides)),
       }
     },
   }, EnvironmentTab as ComponentType<never>))

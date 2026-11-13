@@ -149,6 +149,8 @@ export interface CodeSettings {
   readonly environment: readonly string[]
   /** Network none, read-only workspace, no cache and no extra folders, whatever else is set. */
   readonly lockdown: boolean
+  /** Preview tab available for Code sessions (a session can override it). */
+  readonly previewEnabled: boolean
 }
 
 /** Settings plus whether they can be saved to the profile. */
@@ -184,4 +186,16 @@ export interface PreviewTargets {
   readonly targets: readonly PreviewTarget[]
   /** Settings > Code > Preview ports is not empty, so only those ports can be opened. */
   readonly restricted: boolean
+}
+
+/** Per-session overrides of Settings > Code; an absent field follows Settings. */
+export interface SessionOverrides {
+  readonly preview?: boolean
+}
+
+/** A session's overrides and what they resolve to. */
+export interface SessionOverridesView {
+  readonly overrides: SessionOverrides
+  readonly effective: { readonly preview: boolean }
+  readonly defaults: { readonly preview: boolean }
 }

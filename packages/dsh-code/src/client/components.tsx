@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Button, Input, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, PreviewTargets, ProvisionStep, SessionVariables, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { CodeSessionView, CodeSettings, CodeSettingsView, GhAccount, PreviewTargets, ProvisionStep, SessionOverrides, SessionOverridesView, SessionVariables, PendingWork, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import type { NS } from './locales.ts'
 
 type T = PropsLocale<typeof NS>['t']
@@ -359,7 +359,7 @@ export interface SettingsInjected {
 }
 
 type Draft = Record<'allow' | 'privateAllow' | 'ports' | 'previewPorts' | 'cpus' | 'memoryMb' | 'pids' | 'tmpMb' | 'maxWorkspaces' | 'workerImage' | 'shmMb' | 'readOnlyFolders' | 'environment', string>
-  & { network: CodeSettings['network']; disabledAccounts: readonly string[]; newBranch: boolean; readOnlyWorkspace: boolean; dependencyCache: boolean; lockdown: boolean }
+  & { network: CodeSettings['network']; disabledAccounts: readonly string[]; newBranch: boolean; readOnlyWorkspace: boolean; dependencyCache: boolean; lockdown: boolean; previewEnabled: boolean }
 
 function toDraft(settings: CodeSettings): Draft {
   return {
@@ -371,6 +371,7 @@ function toDraft(settings: CodeSettings): Draft {
     disabledAccounts: settings.disabledAccounts, newBranch: settings.newBranch,
     shmMb: String(settings.shmMb), readOnlyFolders: settings.readOnlyFolders.join('\n'), environment: settings.environment.join('\n'),
     readOnlyWorkspace: settings.readOnlyWorkspace, dependencyCache: settings.dependencyCache, lockdown: settings.lockdown,
+    previewEnabled: settings.previewEnabled,
   }
 }
 
@@ -391,6 +392,7 @@ export function fromDraft(draft: Draft): CodeSettings {
     shmMb: Number(draft.shmMb), readOnlyFolders: draft.readOnlyFolders.split('\n').map(x => x.trim()).filter(x => x !== ''),
     environment: draft.environment.split('\n').map(x => x.trim()).filter(x => x !== ''),
     readOnlyWorkspace: draft.readOnlyWorkspace, dependencyCache: draft.dependencyCache, lockdown: draft.lockdown,
+    previewEnabled: draft.previewEnabled,
   }
 }
 
@@ -425,13 +427,13 @@ export function CodeSettingsSection({ load, save, accounts, pickFolder, t }: Set
     return () => { live = false }
   }, [load, t])
   if (draft === null) return <div style={note}>{message ?? t('picker.loading')}</div>
-  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow' | 'disabledAccounts' | 'newBranch' | 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'readOnlyFolders' | 'environment'>, type: 'text' | 'number' = 'text'): ReactNode => (
+  const field = (key: Exclude<keyof Draft, 'network' | 'allow' | 'privateAllow' | 'disabledAccounts' | 'newBranch' | 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'previewEnabled' | 'readOnlyFolders' | 'environment'>, type: 'text' | 'number' = 'text'): ReactNode => (
     <label style={{ display: 'grid', gap: 4 }}>
       <span style={note}>{t(`settings.${key}`)}</span>
       <Input aria-label={t(`settings.${key}`)} type={type} value={draft[key]} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }) }} />
     </label>
   )
-  const toggle = (key: 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown', hint: string): ReactNode => (
+  const toggle = (key: 'readOnlyWorkspace' | 'dependencyCache' | 'lockdown' | 'previewEnabled', hint: string): ReactNode => (
     <div style={{ display: 'grid', gap: 2, maxWidth: 560 }}>
       <div style={{ ...row, justifyContent: 'space-between' }}>
         <span>{t(`settings.${key}`)}</span>
@@ -550,7 +552,11 @@ export function CodeSettingsSection({ load, save, accounts, pickFolder, t }: Set
         <div style={note}>{draft.newBranch ? t('settings.newBranchOn') : t('settings.newBranchOff')}</div>
       </fieldset>
       {field('workerImage')}
-      {field('previewPorts')}
+      <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+        <legend style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.preview')}</legend>
+        {toggle('previewEnabled', t('settings.previewEnabledHint'))}
+        {field('previewPorts')}
+      </fieldset>
       <div style={row}>
         <Button type="submit" variant="primary" disabled={busy}>{t('settings.save')}</Button>
         {message !== null && <span style={note} role="status" aria-live="polite">{message}</span>}
@@ -595,6 +601,44 @@ export interface EnvironmentTabInjected {
   readonly usage: () => Promise<Outcome<WorkspaceUsage | null>>
   readonly variables: () => Promise<Outcome<SessionVariables>>
   readonly saveVariables: (lines: string[]) => Promise<Outcome<SessionVariables>>
+  readonly overrides: () => Promise<Outcome<SessionOverridesView>>
+  readonly saveOverrides: (overrides: SessionOverrides) => Promise<Outcome<SessionOverridesView>>
+}
+
+/** Default / On / Off choices for this session's overrides of Settings > Code. */
+function SessionOverridesEditor({ load, save, t }: { readonly load: () => Promise<Outcome<SessionOverridesView>>; readonly save: (overrides: SessionOverrides) => Promise<Outcome<SessionOverridesView>>; readonly t: T }): ReactNode {
+  const [view, setView] = useState<SessionOverridesView | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void load().then((r) => { if (live) { if (r.ok) setView(r.value); else setMessage(t('error.generic', { error: r.message })) } })
+    return () => { live = false }
+  }, [load, t])
+  if (view === null) return message === null ? null : <div style={note} role="alert">{message}</div>
+  const choice = view.overrides.preview === undefined ? 'default' : view.overrides.preview ? 'on' : 'off'
+  return (
+    <section style={{ display: 'grid', gap: 8, maxWidth: 560 }}>
+      <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{t('env.sessionOptions')}</h3>
+      <div style={{ ...row, justifyContent: 'space-between' }}>
+        <span>{t('env.previewForSession')}</span>
+        <SegmentedControl<'default' | 'on' | 'off'>
+          id="dsh-code-session-preview"
+          label={t('env.previewForSession')}
+          value={choice}
+          onChange={(next) => {
+            const overrides: SessionOverrides = next === 'default' ? {} : { preview: next === 'on' }
+            void save(overrides).then((r) => { if (r.ok) { setView(r.value); setMessage(null) } else setMessage(t('error.generic', { error: r.message })) })
+          }}
+          options={[
+            { value: 'default', label: t('env.default', { value: view.defaults.preview ? t('env.on') : t('env.off') }) },
+            { value: 'on', label: t('env.on') },
+            { value: 'off', label: t('env.off') },
+          ]}
+        />
+      </div>
+      {message !== null && <div style={note} role="alert">{message}</div>}
+    </section>
+  )
 }
 
 /**
@@ -660,7 +704,7 @@ function SessionVariablesEditor({ variables, save, t }: { readonly variables: ()
  * @param props - injected loaders, state and translator.
  * @returns the tab content.
  */
-export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, variables, saveVariables, t }: InjectFace<EnvironmentTabInjected> & PropsLocale<typeof NS>): ReactNode {
+export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, variables, saveVariables, overrides, saveOverrides, t }: InjectFace<EnvironmentTabInjected> & PropsLocale<typeof NS>): ReactNode {
   const view = useView(v => v)
   const codeMode = usePresetIds(ids => ids.has(sessionId))
   const status = view?.status ?? (codeMode ? 'none' : 'host')
@@ -678,6 +722,7 @@ export function EnvironmentTab({ useView, usePresetIds, sessionId, load, usage, 
           ) : undefined}
           t={t}
         />
+        {codeMode && <SessionOverridesEditor load={overrides} save={saveOverrides} t={t} />}
         {codeMode && <SessionVariablesEditor variables={variables} save={saveVariables} t={t} />}
       </div>
     </div>
@@ -746,6 +791,7 @@ export function PreviewTab({ useView, usePresetIds, sessionId, targets, open, t 
   }, [port, open])
   if (!codeMode) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notCode')}</div>
   if (!ready) return <div style={{ ...note, padding: 16 }}>{t('previewTab.notReady')}</div>
+  if (error !== null && /Preview is off/.test(error)) return <div style={{ ...note, padding: 16 }}>{t('previewTab.off')}</div>
   const blocked = (list?.targets ?? []).filter(p => !(p.listening && p.allowed))
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>

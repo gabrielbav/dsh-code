@@ -6,7 +6,7 @@ const good: CodeSettings = {
   network: 'allowlist', allow: ['GitHub.com', '*.npmjs.org', 'github.com'], privateAllow: ['Registry.local:5000'], ports: [443, 80, 443],
   cpus: 1.5, memoryMb: 2048, pids: 256, tmpMb: 512, maxWorkspaces: 4, workerImage: 'ghcr.io/acme/worker:1.0@sha256:' + 'a'.repeat(64), previewPorts: [5173, 3000],
   disabledAccounts: ['gvieiracit', 'gvieiracit'], newBranch: true,
-  shmMb: 256, readOnlyWorkspace: false, dependencyCache: true, readOnlyFolders: ['/srv/datasets', '/srv/datasets'], environment: ['NODE_ENV=test', '# comment', 'NODE_ENV=development'], lockdown: false,
+  shmMb: 256, readOnlyWorkspace: false, dependencyCache: true, readOnlyFolders: ['/srv/datasets', '/srv/datasets'], environment: ['NODE_ENV=test', '# comment', 'NODE_ENV=development'], lockdown: false, previewEnabled: true,
 }
 
 describe('Settings > Code validation', () => {

@@ -5,6 +5,13 @@ export const NS = 'dsh-code'
 
 export const en = {
   'dialog.title': 'Code mode',
+  'settings.preview': 'Preview',
+  'settings.previewEnabled': 'Preview tab',
+  'settings.previewEnabledHint': 'Show the web app running in a Code session in its Preview tab. A session can turn it on or off in its Environment tab.',
+  'env.sessionOptions': 'This session',
+  'env.previewForSession': 'Preview',
+  'env.default': 'Default ({value})',
+  'previewTab.off': 'Preview is off for this session. Turn it on in the Environment tab, or for every session in Settings > Code.',
   'view.preview': 'Preview',
   'previewTab.notCode': 'Preview shows a web app running in a Code mode session. Choose Code mode for this session to use it.',
   'previewTab.notReady': 'The workspace starts with the first message. Then ask the agent to start the app in the background, and it appears here.',
@@ -174,6 +181,13 @@ export type CodeKey = keyof typeof en
 
 export const zh: Record<CodeKey, string> = {
   'dialog.title': '代码模式',
+  'settings.preview': '预览',
+  'settings.previewEnabled': '预览标签',
+  'settings.previewEnabledHint': '在代码会话的“预览”标签中显示其运行的 Web 应用。会话可在其“环境”标签中开启或关闭。',
+  'env.sessionOptions': '此会话',
+  'env.previewForSession': '预览',
+  'env.default': '默认（{value}）',
+  'previewTab.off': '此会话的预览已关闭。请在“环境”标签中开启，或在“设置 > 代码”中为所有会话开启。',
   'view.preview': '预览',
   'previewTab.notCode': '预览显示在代码模式会话中运行的 Web 应用。请为此会话选择代码模式。',
   'previewTab.notReady': '工作区会在第一条消息时启动。然后让代理在后台启动应用，它就会显示在这里。',

@@ -21,7 +21,7 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import { WorkspaceError, WorkspaceManager, type WorkspaceManagerConfig, type WorkspaceRecord } from '../core/workspaces.ts'
 import { EnvironmentError, environmentLines, parseEnvironment } from '../core/environment.ts'
 import { GitHubProvider, SourceControlError } from '../core/github.ts'
-import type { AccountRepositories, BranchList, GhAccount, PreviewTargets, ProvisionStep, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
+import type { AccountRepositories, BranchList, GhAccount, PreviewTargets, ProvisionStep, SessionOverrides, SessionOverridesView, SessionVariables, CodeSessionView, CodeSettings, CodeSettingsView, PendingWork, PushResult, RepositorySummary, SelfTestReport, SessionEnvironment, WorkspaceUsage } from '../types.ts'
 import { onlySettingsChanged, SETTINGS_FIELDS, SettingsError, validateSettings } from '../core/settings.ts'
 import { PREVIEW_PREFIX, PreviewProxy, relayConnection } from './preview.ts'
 import { Git, gitRunner } from '../core/git.ts'
@@ -70,6 +70,7 @@ export interface Config {
   readOnlyFolders: string[]
   environment: string[]
   lockdown: boolean
+  previewEnabled: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -97,6 +98,7 @@ export const Config: z<Config> = z.object({
   readOnlyFolders: z.array(z.string()).default([]).description('Extra host folders mounted read-only at the same path'),
   environment: z.array(z.string()).default([]).description('Default NAME=value variables for every Code session'),
   lockdown: z.boolean().default(false).description('Network none, read-only workspace, no cache and no extra folders'),
+  previewEnabled: z.boolean().default(true).description('Preview tab for Code sessions; a session can override it'),
   newBranch: z.boolean().default(true).description('Give each Code session its own dsh-code/<hash> branch; false works on the chosen branch'),
   defaultAccount: z.string().default('').description('GitHub account (gh login) new Code sessions use; empty uses the gh CLI active account'),
 })
@@ -150,6 +152,7 @@ function settingsOf(config: Config): CodeSettings {
     disabledAccounts: config.disabledAccounts, newBranch: config.newBranch,
     shmMb: config.shmMb, readOnlyWorkspace: config.readOnlyWorkspace, dependencyCache: config.dependencyCache,
     readOnlyFolders: config.readOnlyFolders, environment: config.environment, lockdown: config.lockdown,
+    previewEnabled: config.previewEnabled,
   }
 }
 
@@ -425,6 +428,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
     this.manager.config.maxWorkspaces = next.maxWorkspaces
     this.manager.config.previewPorts = next.previewPorts
     this.manager.config.newBranch = next.newBranch
+    if (!next.previewEnabled) for (const record of this.manager.list()) if (this.manager.sessionOverrides(record.sessionId).preview !== true) this.previews.revoke(record.sessionId)
     this.listing = undefined
     Object.assign(this.manager.config, sandboxOptions(next))
     await this.manager.updatePolicy({ mode: next.lockdown ? 'none' : next.network, allow: next.allow, privateAllow: next.privateAllow, ports: next.ports })
@@ -500,6 +504,36 @@ export class CodeWorkspacesService extends TypertRemoteService {
     return (await this.manager.usage(sessionId).catch(() => undefined)) ?? null
   }
 
+  private previewOn(sessionId: string): boolean {
+    return this.manager.sessionOverrides(sessionId).preview ?? this.config.previewEnabled
+  }
+
+  /**
+   * A session's overrides of Settings > Code, with what they resolve to.
+   * @param sessionId - session id.
+   * @returns overrides, effective values and the Settings defaults.
+   */
+  @Remote
+  async sessionOverrides(sessionId: string): Promise<SessionOverridesView> {
+    const overrides = this.manager.sessionOverrides(sessionId) as SessionOverrides
+    return { overrides, effective: { preview: this.previewOn(sessionId) }, defaults: { preview: this.config.previewEnabled } }
+  }
+
+  /**
+   * Replace a session's overrides; a field left out follows Settings again.
+   * @param sessionId - session id.
+   * @param overrides - the new overrides.
+   * @returns the saved view.
+   */
+  @Remote
+  async setSessionOverrides(sessionId: string, overrides: SessionOverrides): Promise<SessionOverridesView> {
+    const values: Record<string, boolean> = {}
+    if (typeof overrides.preview === 'boolean') values.preview = overrides.preview
+    await this.manager.setSessionOverrides(sessionId, values)
+    if (!this.previewOn(sessionId)) this.previews.revoke(sessionId)
+    return this.sessionOverrides(sessionId)
+  }
+
   /**
    * Ports the Preview dialog can offer: what the workspace listens on now, plus declared ports not running yet.
    * @param sessionId - session id.
@@ -507,6 +541,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
    */
   @Remote
   async previewTargets(sessionId: string): Promise<PreviewTargets> {
+    if (!this.previewOn(sessionId)) throw new RemoteError('code/failed', 'Preview is off for this session', { reason: 'preview-off' })
     const declared = this.manager.config.previewPorts
     const restricted = declared.length > 0
     let listening: { port: number; localOnly: boolean }[] = []
@@ -531,6 +566,7 @@ export class CodeWorkspacesService extends TypertRemoteService {
    */
   @Remote
   async previewUrl(sessionId: string, port: number): Promise<string> {
+    if (!this.previewOn(sessionId)) throw new RemoteError('code/failed', 'Preview is off for this session', { reason: 'preview-off' })
     if (this.ctx.get('webServer' as never) === undefined) throw new RemoteError('code/failed', 'previews need the Harness web server (dsh web)', { reason: 'unsupported' })
     try {
       // Without a Preview ports list, only a port something listens on (beyond loopback) gets a link.
